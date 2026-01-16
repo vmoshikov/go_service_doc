@@ -1,0 +1,9 @@
+# Example pip configuration for corporate VPN
+# Copy this to ~/.pip/pip.conf or /etc/pip.conf
+
+[global]
+index-url = https://your-corporate-pypi.com/simple
+trusted-host = your-corporate-pypi.com
+
+# Alternative: multiple indexes
+# extra-index-url = https://pypi.org/simple

@@ -53,6 +53,30 @@ def main():
         docs_dir.mkdir(parents=True, exist_ok=True)
         print(f"Created docs directory at {docs_dir}")
     
+    # Check for external user docs directory (from docs repo)
+    # Format: docs/<project_id>/user/
+    user_docs_dir = None
+    
+    # Try to determine project ID from environment or project path
+    project_id = os.environ.get('PROJECT_ID', '')
+    if not project_id:
+        # Try to extract from PROJECT_REPO_URL or CI_PROJECT_PATH
+        project_path = os.environ.get('PROJECT_REPO_URL', '') or os.environ.get('CI_PROJECT_PATH', '')
+        if project_path:
+            # Extract project identifier (group/project -> group_project)
+            project_id = project_path.replace('/', '_').replace(':', '_').replace('.git', '')
+    
+    if project_id:
+        # Look for user docs in docs repo structure
+        # In GitLab CI, we're in the docs repository
+        docs_repo_root = Path(os.environ.get('CI_PROJECT_DIR', '.'))
+        potential_user_docs = docs_repo_root / 'docs' / project_id / 'user'
+        if potential_user_docs.exists():
+            user_docs_dir = potential_user_docs
+            print(f"Found user docs directory: {user_docs_dir}")
+        else:
+            print(f"User docs directory not found: {potential_user_docs} (will use local docs if available)")
+    
     print(f"Analyzing Go service at: {go_dir}")
     
     # Check for config file and create example if needed
@@ -84,7 +108,7 @@ def main():
     
     # Generate documentation
     print("Generating documentation...")
-    doc_generator = DocumentationGenerator(go_dir, docs_dir)
+    doc_generator = DocumentationGenerator(go_dir, docs_dir, user_docs_dir=user_docs_dir)
     doc_generator.set_structs(api_spec.get('structs', {}))
     doc_generator.generate(
         functions=functions,

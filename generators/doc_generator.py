@@ -15,9 +15,10 @@ from parsers.component_analyzer import ComponentAnalyzer
 
 
 class DocumentationGenerator:
-    def __init__(self, go_dir: Path, docs_dir: Path):
+    def __init__(self, go_dir: Path, docs_dir: Path, user_docs_dir: Optional[Path] = None):
         self.go_dir = go_dir
         self.docs_dir = docs_dir
+        self.user_docs_dir = user_docs_dir  # External user docs directory (from docs repo)
         self.structs = {}  # Will be set from API spec
         self.plantuml_generator = PlantUMLGenerator()
     
@@ -587,6 +588,9 @@ class DocumentationGenerator:
         section_titles = []  # For navigation
         
         # User-provided sections (optional)
+        # First check external user docs directory (from docs repo)
+        user_docs_source = self.user_docs_dir if self.user_docs_dir else self.docs_dir
+        
         user_sections = [
             ('user_architecture.md', 'Architecture'),
             ('user_db_structure.md', 'DB Structure'),
@@ -600,9 +604,19 @@ class DocumentationGenerator:
             ('libraries.md', 'Libraries Used'),
         ]
         
-        # Add user sections first
+        # Add user sections first (from external docs or local)
         for filename, title in user_sections:
-            file_path = self.docs_dir / filename
+            # Try external user docs first
+            file_path = None
+            if self.user_docs_dir and self.user_docs_dir.exists():
+                file_path = self.user_docs_dir / filename
+                if not file_path.exists():
+                    file_path = None
+            
+            # Fallback to local docs
+            if not file_path:
+                file_path = self.docs_dir / filename
+            
             if file_path.exists():
                 content = file_path.read_text(encoding='utf-8')
                 sections.append((title, content))
@@ -620,18 +634,40 @@ class DocumentationGenerator:
                 titles = self._extract_section_titles(content)
                 section_titles.append((title, titles))
         
-        # Check for other user files
-        other_files = [
-            f for f in self.docs_dir.iterdir()
-            if f.is_file() and f.suffix == '.md' and f.name not in [
-                'user_architecture.md', 'user_db_structure.md',
-                'functions.md', 'api.md', 'test.md', 'libraries.md'
-            ]
-        ]
+        # Check for other user files (from external docs or local)
+        other_files = []
         
-        if other_files:
+        # Check external user docs directory
+        if self.user_docs_dir and self.user_docs_dir.exists():
+            other_files.extend([
+                f for f in self.user_docs_dir.iterdir()
+                if f.is_file() and f.suffix == '.md' and f.name not in [
+                    'user_architecture.md', 'user_db_structure.md',
+                    'functions.md', 'api.md', 'test.md', 'libraries.md'
+                ]
+            ])
+        
+        # Check local docs directory
+        if self.docs_dir.exists():
+            other_files.extend([
+                f for f in self.docs_dir.iterdir()
+                if f.is_file() and f.suffix == '.md' and f.name not in [
+                    'user_architecture.md', 'user_db_structure.md',
+                    'functions.md', 'api.md', 'test.md', 'libraries.md'
+                ]
+            ])
+        
+        # Remove duplicates
+        seen = set()
+        unique_files = []
+        for f in other_files:
+            if f.name not in seen:
+                seen.add(f.name)
+                unique_files.append(f)
+        
+        if unique_files:
             sections.append(('Others', ''))
-            for other_file in sorted(other_files):
+            for other_file in sorted(unique_files, key=lambda x: x.name):
                 content = other_file.read_text(encoding='utf-8')
                 sections.append((other_file.stem, content))
                 titles = self._extract_section_titles(content)
