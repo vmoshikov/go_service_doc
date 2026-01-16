@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  doc-generator:
+    build: .
+    container_name: go-doc-generator
+    volumes:
+      # Mount your Go service directory here
+      - ./workspace:/workspace
+      # Or mount from host path (uncomment and adjust):
+      # - /path/to/your/go-service:/workspace
+    working_dir: /workspace
+    # Keep container running for exec access
+    command: service
+    stdin_open: true
+    tty: true
