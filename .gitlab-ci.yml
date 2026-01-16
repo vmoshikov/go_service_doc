@@ -1,0 +1,96 @@
+stages:
+  - generate-docs
+
+variables:
+  PIP_INDEX_URL: "${CI_PIP_INDEX_URL:-https://pypi.org/simple}"
+  PIP_TRUSTED_HOST: "${CI_PIP_TRUSTED_HOST:-pypi.org}"
+  DOCS_ROOT: "docs"
+  PYTHON_VERSION: "3.11"
+
+generate-documentation:
+  stage: generate-docs
+  image: python:${PYTHON_VERSION}-slim
+  before_script:
+    # Install system dependencies
+    - apt-get update && apt-get install -y build-essential git vim less && rm -rf /var/lib/apt/lists/*
+    
+    # Configure pip for corporate VPN
+    - |
+      pip install --no-cache-dir --upgrade pip
+      if [ -n "$PIP_INDEX_URL" ]; then
+        pip config set global.index-url "${PIP_INDEX_URL}"
+      fi
+      if [ -n "$PIP_TRUSTED_HOST" ]; then
+        pip config set global.trusted-host "${PIP_TRUSTED_HOST}"
+      fi
+    
+    # Install Python dependencies
+    - pip install --no-cache-dir -r requirements.txt
+    
+    # Create docs directory structure
+    - mkdir -p ${DOCS_ROOT}
+  
+  script:
+    # Determine project identifier from various sources
+    - |
+      if [ -n "$PROJECT_REPO_URL" ]; then
+        # Extract project ID from repository URL
+        # Format: https://gitlab.com/group/project.git -> group_project
+        PROJECT_ID=$(echo "$PROJECT_REPO_URL" | sed 's|.*://[^/]*/||' | sed 's|\.git$||' | tr '/' '_' | tr ':' '_')
+      elif [ -n "$PROJECT_PATH" ]; then
+        PROJECT_ID=$(echo "$PROJECT_PATH" | tr '/' '_' | tr ':' '_')
+      elif [ -n "$CI_PROJECT_PATH" ]; then
+        PROJECT_ID=$(echo "$CI_PROJECT_PATH" | tr '/' '_' | tr ':' '_')
+      else
+        echo "Error: PROJECT_REPO_URL, PROJECT_PATH, or CI_PROJECT_PATH must be set"
+        exit 1
+      fi
+    
+    # Create project-specific directory
+    - PROJECT_DOCS_DIR="${DOCS_ROOT}/${PROJECT_ID}"
+    - mkdir -p "${PROJECT_DOCS_DIR}"
+    
+    # Clone or use provided project path
+    - |
+      if [ -n "$PROJECT_REPO_URL" ]; then
+        # Clone external repository
+        CLONE_DIR="/tmp/${PROJECT_ID}"
+        git clone "$PROJECT_REPO_URL" "$CLONE_DIR"
+        if [ -n "$PROJECT_REF" ]; then
+          cd "$CLONE_DIR"
+          git checkout "$PROJECT_REF"
+        fi
+        PROJECT_SOURCE="$CLONE_DIR"
+      elif [ -n "$PROJECT_PATH" ]; then
+        PROJECT_SOURCE="$PROJECT_PATH"
+      else
+        PROJECT_SOURCE="."
+      fi
+    
+    # Set environment variable for project ID (used by doc_generator.py)
+    - export PROJECT_ID="${PROJECT_ID}"
+    
+    # Generate documentation
+    # User docs will be automatically loaded from docs/<project_id>/user/ if they exist
+    - |
+      python doc_generator.py "${PROJECT_SOURCE}" --output README.md
+    
+    # Move generated docs to project directory in docs repo
+    - |
+      if [ -d "${PROJECT_SOURCE}/docs" ]; then
+        cp -r "${PROJECT_SOURCE}/docs"/* "${PROJECT_DOCS_DIR}/" || true
+      fi
+      if [ -f "${PROJECT_SOURCE}/README.md" ]; then
+        cp "${PROJECT_SOURCE}/README.md" "${PROJECT_DOCS_DIR}/README.md"
+      fi
+  
+  artifacts:
+    paths:
+      - ${DOCS_ROOT}/
+    expire_in: 1 week
+  
+  only:
+    - main
+    - master
+    - triggers
+    - web
