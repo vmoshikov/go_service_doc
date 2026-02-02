@@ -10,6 +10,17 @@ variables:
 generate-documentation:
   stage: generate-docs
   image: python:${PYTHON_VERSION}-slim
+  rules:
+    # Manual запуск из UI "Run pipeline"
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: on_success
+    # Запуск через trigger token / API trigger
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'
+      when: on_success
+    # Опционально: запуск по пушу в docs-репо (main/master)
+    - if: '$CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master")'
+      when: on_success
+    - when: never
   before_script:
     # Install system dependencies
     - apt-get update && apt-get install -y build-essential git vim less && rm -rf /var/lib/apt/lists/*
@@ -88,9 +99,3 @@ generate-documentation:
     paths:
       - ${DOCS_ROOT}/
     expire_in: 1 week
-  
-  only:
-    - main
-    - master
-    - triggers
-    - web
