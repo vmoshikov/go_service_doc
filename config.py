@@ -8,9 +8,9 @@ from typing import Dict, List, Optional
 
 
 class Config:
-    def __init__(self, go_dir: Path):
+    def __init__(self, go_dir: Path, config_path: Optional[Path] = None):
         self.go_dir = go_dir
-        self.config_path = go_dir / '.doc_config.json'
+        self.config_path = config_path or (go_dir / '.doc_config.json')
         self.external_repos = {}
         self.proto_mappings = {}
         self._load_config()
@@ -75,8 +75,8 @@ class Config:
         return base_url
     
     @staticmethod
-    def create_example_config(go_dir: Path):
-        """Create an example configuration file"""
+    def create_example_config(target_path: Path):
+        """Create an example configuration file at target_path"""
         example_config = {
             "external_repositories": {
                 "proto-repo": {
@@ -98,11 +98,11 @@ class Config:
                 "com.example": "proto-repo"
             }
         }
-        
-        config_path = go_dir / '.doc_config.json'
-        config_path.write_text(
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(
             json.dumps(example_config, indent=2),
             encoding='utf-8'
         )
-        print(f"Created example config at {config_path}")
-        print("Edit .doc_config.json to configure your external repositories")
+        print(f"Created example config at {target_path}")
+        print("Edit this file to configure your external repositories")

@@ -1,16 +1,16 @@
-# Docker Usage Guide
+# Руководство по использованию Docker
 
-## Quick Start
+## Быстрый старт
 
-### Build the Image
+### Сборка образа
 
 ```bash
 docker build -t go-doc-generator .
 ```
 
-### Run as Service (Recommended)
+### Запуск как сервис (Рекомендуется)
 
-Start the service container (stays running for exec access):
+Запустите контейнер сервиса (остается запущенным для доступа через exec):
 
 ```bash
 docker run -d --name doc-gen \
@@ -18,72 +18,72 @@ docker run -d --name doc-gen \
   go-doc-generator
 ```
 
-### Execute Commands
+### Выполнение команд
 
-Once the container is running, you can execute commands:
+После запуска контейнера вы можете выполнять команды:
 
 ```bash
-# Generate documentation
+# Генерация документации
 docker exec -it doc-gen doc_generator.py /workspace
 
-# Generate with custom output file
+# Генерация с пользовательским именем файла
 docker exec -it doc-gen doc_generator.py /workspace --output CUSTOM_README.md
 
-# Access interactive shell
+# Доступ к интерактивному shell
 docker exec -it doc-gen bash
 
-# List files in workspace
+# Список файлов в workspace
 docker exec -it doc-gen ls -la /workspace
 
-# View generated docs
+# Просмотр сгенерированных документов
 docker exec -it doc-gen ls -la /workspace/docs
 
-# Check if Go service exists
+# Проверка существования Go сервиса
 docker exec -it doc-gen test -d /workspace && echo "Directory exists"
 ```
 
-### View Container Logs
+### Просмотр логов контейнера
 
 ```bash
 docker logs doc-gen
 ```
 
-### Stop and Remove
+### Остановка и удаление
 
 ```bash
 docker stop doc-gen
 docker rm doc-gen
 ```
 
-## Using Docker Compose
+## Использование Docker Compose
 
-### Start Service
+### Запуск сервиса
 
 ```bash
 docker-compose up -d
 ```
 
-### Execute Generator
+### Выполнение генератора
 
 ```bash
 docker-compose exec doc-generator doc_generator.py /workspace
 ```
 
-### Access Shell
+### Доступ к shell
 
 ```bash
 docker-compose exec doc-generator bash
 ```
 
-### Stop Service
+### Остановка сервиса
 
 ```bash
 docker-compose down
 ```
 
-## Mount Multiple Paths
+## Монтирование нескольких путей
 
-You can mount multiple directories:
+Вы можете монтировать несколько директорий:
 
 ```bash
 docker run -d --name doc-gen \
@@ -91,35 +91,35 @@ docker run -d --name doc-gen \
   -v /path/to/go-service-2:/workspace/service2 \
   go-doc-generator
 
-# Generate docs for service 1
+# Генерация документации для сервиса 1
 docker exec -it doc-gen doc_generator.py /workspace/service1
 
-# Generate docs for service 2
+# Генерация документации для сервиса 2
 docker exec -it doc-gen doc_generator.py /workspace/service2
 ```
 
-## Troubleshooting
+## Устранение неполадок
 
-### Check if container is running
+### Проверка запущен ли контейнер
 
 ```bash
 docker ps | grep doc-gen
 ```
 
-### View container status
+### Просмотр статуса контейнера
 
 ```bash
 docker inspect doc-gen
 ```
 
-### Access container even if it's stopped
+### Доступ к контейнеру даже если он остановлен
 
 ```bash
 docker start doc-gen
 docker exec -it doc-gen bash
 ```
 
-### Rebuild after code changes
+### Пересборка после изменений кода
 
 ```bash
 docker build -t go-doc-generator .

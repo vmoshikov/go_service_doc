@@ -1,244 +1,244 @@
-# Go Service Documentation Generator
+# Генератор документации для Go сервисов
 
-A Python service that automatically generates comprehensive documentation for Go services by analyzing the codebase and combining user-provided sections with auto-generated content.
+Python-сервис, который автоматически генерирует комплексную документацию для Go сервисов, анализируя кодовую базу и объединяя пользовательские разделы с автоматически сгенерированным контентом.
 
-## Features
+## Возможности
 
-- **Automatic Code Analysis**: Parses Go source files to extract:
-  - Function definitions with signatures and comments
-  - gRPC and REST API endpoints
-  - Test functions and test cases
-  - Dependencies from `go.mod`
+- **Автоматический анализ кода**: Парсит исходные файлы Go для извлечения:
+  - Определений функций с сигнатурами и комментариями
+  - gRPC и REST API эндпоинтов
+  - Тестовых функций и тест-кейсов
+  - Зависимостей из `go.mod`
 
-- **Documentation Sections**:
-  - **Architecture** (`user_architecture.md`) - User-provided
-  - **DB Structure** (`user_db_structure.md`) - User-provided (optional)
-  - **Functions** (`functions.md`) - Auto-generated
-  - **API Specification** (`api.md`) - Auto-generated with JSON representations
-  - **Testing** (`test.md`) - Auto-generated
-  - **Libraries Used** (`libraries.md`) - Auto-generated
-  - **Others** - User-provided (optional)
+- **Разделы документации**:
+  - **Архитектура** (`user_architecture.md`) - Предоставляется пользователем
+  - **Структура БД** (`user_db_structure.md`) - Предоставляется пользователем (опционально)
+  - **Функции** (`functions.md`) - Автоматически генерируется
+  - **Спецификация API** (`api.md`) - Автоматически генерируется с JSON представлениями
+  - **Тестирование** (`test.md`) - Автоматически генерируется
+  - **Используемые библиотеки** (`libraries.md`) - Автоматически генерируется
+  - **Прочее** - Предоставляется пользователем (опционально)
 
-- **API Documentation**: Extracts gRPC and REST endpoints with:
-  - Comments above server descriptions
-  - Input and output parameters
-  - JSON representations of request/response structures
+- **Документация API**: Извлекает gRPC и REST эндпоинты с:
+  - Комментариями над описаниями серверов
+  - Входными и выходными параметрами
+  - JSON представлениями структур запросов/ответов
 
-- **PlantUML Diagrams**: Automatically generates architecture diagrams:
-  - Component dependency graphs
-  - Layered architecture views
-  - Visual representation of service structure
+- **Диаграммы PlantUML**: Автоматически генерирует диаграммы архитектуры:
+  - Графы зависимостей компонентов
+  - Представления слоистой архитектуры
+  - Визуальное представление структуры сервиса
 
-## Installation
+## Установка
 
-Install dependencies:
+Установите зависимости:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-The service uses **tree-sitter** for accurate AST-based parsing of Go code, which provides better accuracy than regex-based parsing. If tree-sitter is not available, the service will automatically fall back to regex parsing.
+Сервис использует **tree-sitter** для точного парсинга на основе AST кода Go, что обеспечивает лучшую точность, чем парсинг на основе регулярных выражений. Если tree-sitter недоступен, сервис автоматически переключится на парсинг с помощью регулярных выражений.
 
-### Dependencies
+### Зависимости
 
-- `tree-sitter>=0.20.0` - Parser library
-- `tree-sitter-go>=0.19.0` - Go language grammar for tree-sitter
+- `tree-sitter>=0.20.0` - Библиотека парсера
+- `tree-sitter-go>=0.19.0` - Грамматика языка Go для tree-sitter
 
-## Usage
+## Использование
 
-### Local Installation
+### Локальная установка
 
 ```bash
-python doc_generator.py <path_to_go_service_directory> [--output README.md]
+python doc_generator.py <путь_к_директории_go_сервиса> [--output README.md]
 ```
 
 ### Docker
 
-Build the Docker image:
+Соберите Docker образ:
 
 ```bash
 docker build -t go-doc-generator .
 ```
 
-#### Run as a Service (Recommended)
+#### Запуск как сервис (Рекомендуется)
 
-Start the service container (keeps running for exec access):
+Запустите контейнер сервиса (остается запущенным для доступа через exec):
 
 ```bash
 docker run -d --name doc-gen -v /path/to/go-service:/workspace go-doc-generator
 ```
 
-Execute commands in the running container:
+Выполните команды в запущенном контейнере:
 
 ```bash
-# Generate documentation
+# Генерация документации
 docker exec -it doc-gen doc_generator.py /workspace
 
-# With custom output
+# С пользовательским именем файла
 docker exec -it doc-gen doc_generator.py /workspace --output CUSTOM_README.md
 
-# Access shell to explore
+# Доступ к shell для исследования
 docker exec -it doc-gen bash
 
-# View files in workspace
+# Просмотр файлов в workspace
 docker exec -it doc-gen ls -la /workspace
 ```
 
-Stop and remove the container:
+Остановите и удалите контейнер:
 
 ```bash
 docker stop doc-gen && docker rm doc-gen
 ```
 
-#### Run Once (Execute and Exit)
+#### Одноразовый запуск (Выполнение и выход)
 
 ```bash
 docker run --rm -v /path/to/go-service:/workspace go-doc-generator /workspace
 ```
 
-#### Using Docker Compose
+#### Использование Docker Compose
 
 ```bash
-# Start service
+# Запуск сервиса
 docker-compose up -d
 
-# Execute generator
+# Выполнение генератора
 docker-compose exec doc-generator doc_generator.py /workspace
 
-# Access shell
+# Доступ к shell
 docker-compose exec doc-generator bash
 
-# Stop service
+# Остановка сервиса
 docker-compose down
 ```
 
-### Example
+### Пример
 
 ```bash
-# Local
+# Локально
 python doc_generator.py /path/to/my-go-service
 
 # Docker
 docker run --rm -v /path/to/my-go-service:/workspace go-doc-generator /workspace
 ```
 
-This will:
-1. Analyze the Go service codebase
-2. Generate documentation sections in the `docs/` directory
-3. Combine all sections into `README.md` in the service root
+Это выполнит:
+1. Анализ кодовой базы Go сервиса
+2. Генерацию разделов документации в директории `docs/`
+3. Объединение всех разделов в `README.md` в корне сервиса
 
-## User-Provided Documentation
+## Пользовательская документация
 
-You can add your own custom documentation sections that will be automatically included in the generated README.md.
+Вы можете добавить свои собственные разделы документации, которые будут автоматически включены в сгенерированный README.md.
 
-### Predefined Sections
+### Предопределенные разделы
 
-Place these files in the `docs/` directory for special handling:
+Поместите эти файлы в директорию `docs/` для специальной обработки:
 
-- **`user_architecture.md`** - Service architecture overview (appears first)
-- **`user_db_structure.md`** - Database schema and structure (appears second, optional)
+- **`user_architecture.md`** - Обзор архитектуры сервиса (появляется первым)
+- **`user_db_structure.md`** - Схема и структура базы данных (появляется вторым, опционально)
 
-### Custom Sections
+### Пользовательские разделы
 
-Any other `.md` files in the `docs/` directory will be automatically included in the "Others" section:
+Любые другие `.md` файлы в директории `docs/` будут автоматически включены в раздел "Прочее":
 
-- `deployment.md` - Deployment instructions
-- `api_examples.md` - API usage examples
-- `troubleshooting.md` - Troubleshooting guide
-- Any other markdown files you create
+- `deployment.md` - Инструкции по развертыванию
+- `api_examples.md` - Примеры использования API
+- `troubleshooting.md` - Руководство по устранению неполадок
+- Любые другие markdown файлы, которые вы создадите
 
-### How to Add Sections
+### Как добавить разделы
 
-1. Create a markdown file in the `docs/` directory
-2. Start with a `# Title` heading
-3. Run the documentation generator
-4. Your section will appear in the README.md
+1. Создайте markdown файл в директории `docs/`
+2. Начните с заголовка `# Заголовок`
+3. Запустите генератор документации
+4. Ваш раздел появится в README.md
 
-**Example:**
+**Пример:**
 
 ```markdown
-# Deployment Guide
+# Руководство по развертыванию
 
-## Prerequisites
+## Требования
 - Docker
 - Kubernetes
 
-## Steps
-1. Build image
-2. Deploy
+## Шаги
+1. Собрать образ
+2. Развернуть
 ```
 
-See [USER_SECTIONS.md](USER_SECTIONS.md) for detailed instructions and examples.
+См. [USER_SECTIONS.md](USER_SECTIONS.md) для подробных инструкций и примеров.
 
-## Generated Documentation
+## Генерируемая документация
 
-The service automatically generates:
+Сервис автоматически генерирует:
 
-- **functions.md**: All function definitions with signatures and comments
-- **api.md**: Complete API specification with endpoints, parameters, and JSON schemas
-- **test.md**: Test functions, benchmarks, and examples
-- **libraries.md**: Dependencies from `go.mod`
+- **functions.md**: Все определения функций с сигнатурами и комментариями
+- **api.md**: Полная спецификация API с эндпоинтами, параметрами и JSON схемами
+- **test.md**: Тестовые функции, бенчмарки и примеры
+- **libraries.md**: Зависимости из `go.mod`
 
-All sections are automatically combined into a single `README.md` file.
+Все разделы автоматически объединяются в один файл `README.md`.
 
-## Supported Frameworks
+## Поддерживаемые фреймворки
 
-- **gRPC**: Proto-generated service methods
+- **gRPC**: Методы сервисов, сгенерированные из proto
 - **REST**: Gin, Echo, net/http, Gorilla Mux
 
-## Structure
+## Структура
 
 ```
 go_service_doc/
-├── doc_generator.py          # Main entry point
-├── parsers/                  # Code parsers
+├── doc_generator.py          # Главная точка входа
+├── parsers/                  # Парсеры кода
 │   ├── function_parser.py
 │   ├── api_parser.py
 │   ├── test_parser.py
 │   └── library_parser.py
-├── generators/              # Documentation generators
+├── generators/              # Генераторы документации
 │   └── doc_generator.py
 └── requirements.txt
 ```
 
-## CHANGELOG Generation
+## Генерация CHANGELOG
 
-The service includes an automatic CHANGELOG generator that follows [keepachangelog.com](https://keepachangelog.com/) format:
+Сервис включает автоматический генератор CHANGELOG, следующий формату [keepachangelog.com](https://keepachangelog.com/):
 
 ```bash
-python changelog_generator.py <path_to_go_service> [--version 1.0.0] [--since v0.9.0]
+python changelog_generator.py <путь_к_go_сервису> [--version 1.0.0] [--since v0.9.0]
 ```
 
-### Features
+### Возможности
 
-- **Git Integration**: Analyzes git commits and changes
-- **Tree-sitter Analysis**: Understands code changes (functions, APIs, etc.)
-- **AI-Powered**: Generates changelog entries using AI
-- **Keep a Changelog Format**: Follows standard format with Added/Changed/Deprecated/Removed/Fixed/Security sections
-- **Automatic Versioning**: Auto-increments version from git tags
+- **Интеграция с Git**: Анализирует коммиты и изменения в git
+- **Анализ Tree-sitter**: Понимает изменения в коде (функции, API и т.д.)
+- **На основе AI**: Генерирует записи changelog с использованием AI
+- **Формат Keep a Changelog**: Следует стандартному формату с разделами Added/Changed/Deprecated/Removed/Fixed/Security
+- **Автоматическое версионирование**: Автоматически увеличивает версию из git тегов
 
-### Usage
+### Использование
 
 ```bash
-# Generate changelog for all commits since last tag
+# Генерация changelog для всех коммитов с последнего тега
 python changelog_generator.py /path/to/go-service
 
-# Generate changelog with specific version
+# Генерация changelog с указанной версией
 python changelog_generator.py /path/to/go-service --version 1.2.0
 
-# Generate changelog since specific tag/commit
+# Генерация changelog с определенного тега/коммита
 python changelog_generator.py /path/to/go-service --since v1.0.0
 ```
 
-## Notes
+## Примечания
 
-- The service uses **tree-sitter** for accurate AST-based parsing, providing better handling of:
-  - Complex function signatures
-  - Struct definitions with embedded types
-  - Comments and documentation
-  - Edge cases in Go syntax
+- Сервис использует **tree-sitter** для точного парсинга на основе AST, обеспечивая лучшую обработку:
+  - Сложных сигнатур функций
+  - Определений структур со встроенными типами
+  - Комментариев и документации
+  - Краевых случаев в синтаксисе Go
   
-- If tree-sitter is not installed, the service automatically falls back to regex-based parsing
-- The service skips `vendor/` directories and test files during parsing
-- Struct definitions are parsed to generate JSON representations for API documentation
-- Comments above functions and endpoints are preserved in the documentation
+- Если tree-sitter не установлен, сервис автоматически переключается на парсинг с помощью регулярных выражений
+- Сервис пропускает директории `vendor/` и тестовые файлы при парсинге
+- Определения структур парсятся для генерации JSON представлений в документации API
+- Комментарии над функциями и эндпоинтами сохраняются в документации

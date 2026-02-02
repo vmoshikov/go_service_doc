@@ -1,119 +1,119 @@
-# PlantUML Diagrams Guide
+# Руководство по диаграммам PlantUML
 
-The documentation generator automatically creates PlantUML diagrams showing component dependencies and architecture.
+Генератор документации автоматически создает диаграммы PlantUML, показывающие зависимости компонентов и архитектуру.
 
-## Features
+## Возможности
 
-- ✅ **Component Dependency Diagrams**: Shows relationships between components/packages
-- ✅ **Architecture Diagrams**: High-level view organized by layers (API, Service, Data)
-- ✅ **Automatic Detection**: Analyzes your codebase to detect components and dependencies
-- ✅ **Visual Documentation**: Makes it easy to understand service structure
+- ✅ **Диаграммы зависимостей компонентов**: Показывает отношения между компонентами/пакетами
+- ✅ **Диаграммы архитектуры**: Высокоуровневый вид, организованный по слоям (API, Service, Data)
+- ✅ **Автоматическое обнаружение**: Анализирует вашу кодовую базу для обнаружения компонентов и зависимостей
+- ✅ **Визуальная документация**: Упрощает понимание структуры сервиса
 
-## Generated Diagrams
+## Генерируемые диаграммы
 
-### Component Dependencies Diagram
+### Диаграмма зависимостей компонентов
 
-Shows all components and their dependencies:
-- Component names and packages
-- Dependency arrows (who depends on whom)
-- Component metadata (package name, file count)
+Показывает все компоненты и их зависимости:
+- Имена компонентов и пакеты
+- Стрелки зависимостей (кто от кого зависит)
+- Метаданные компонентов (имя пакета, количество файлов)
 
-### Architecture Diagram
+### Диаграмма архитектуры
 
-High-level architecture organized by layers:
-- **API Layer**: Handlers, endpoints, API components
-- **Service Layer**: Business logic, services
-- **Data Layer**: Repositories, database access
-- Dependencies between layers
+Высокоуровневая архитектура, организованная по слоям:
+- **API Слой**: Обработчики, эндпоинты, API компоненты
+- **Сервисный Слой**: Бизнес-логика, сервисы
+- **Слой Данных**: Репозитории, доступ к базе данных
+- Зависимости между слоями
 
-## How It Works
+## Как это работает
 
-1. **Component Analysis**: Scans Go files to identify:
-   - Package names
-   - Directory structure (components)
-   - Import statements (dependencies)
+1. **Анализ компонентов**: Сканирует Go файлы для идентификации:
+   - Имен пакетов
+   - Структуры директорий (компоненты)
+   - Операторов импорта (зависимости)
 
-2. **Dependency Detection**: Tracks:
-   - Which components import from which
-   - Internal vs external dependencies
-   - Package relationships
+2. **Обнаружение зависимостей**: Отслеживает:
+   - Какие компоненты импортируют из каких
+   - Внутренние vs внешние зависимости
+   - Отношения между пакетами
 
-3. **Diagram Generation**: Creates PlantUML diagrams:
-   - Component dependency graph
-   - Layered architecture view
+3. **Генерация диаграмм**: Создает диаграммы PlantUML:
+   - Граф зависимостей компонентов
+   - Представление слоистой архитектуры
 
-## Viewing Diagrams
+## Просмотр диаграмм
 
-### Option 1: PlantUML Online Server
+### Вариант 1: PlantUML онлайн сервер
 
-1. Copy the PlantUML code from `docs/component_diagram.puml`
-2. Go to http://www.plantuml.com/plantuml/uml/
-3. Paste the code
-4. View the rendered diagram
+1. Скопируйте код PlantUML из `docs/component_diagram.puml`
+2. Перейдите на http://www.plantuml.com/plantuml/uml/
+3. Вставьте код
+4. Просмотрите отрендеренную диаграмму
 
-### Option 2: VS Code Extension
+### Вариант 2: Расширение VS Code
 
-Install the "PlantUML" extension:
-1. Open VS Code
-2. Install "PlantUML" by jebbs
-3. Open `.puml` file
-4. Press `Alt+D` to preview
+Установите расширение "PlantUML":
+1. Откройте VS Code
+2. Установите "PlantUML" от jebbs
+3. Откройте файл `.puml`
+4. Нажмите `Alt+D` для предпросмотра
 
-### Option 3: IntelliJ IDEA / GoLand
+### Вариант 3: IntelliJ IDEA / GoLand
 
-1. Install PlantUML plugin
-2. Open `.puml` file
-3. View diagram automatically
+1. Установите плагин PlantUML
+2. Откройте файл `.puml`
+3. Просмотрите диаграмму автоматически
 
-### Option 4: Command Line
+### Вариант 4: Командная строка
 
 ```bash
-# Install PlantUML
+# Установка PlantUML
 # macOS
 brew install plantuml
 
-# Generate PNG
+# Генерация PNG
 plantuml docs/component_diagram.puml
 
-# Generate SVG
+# Генерация SVG
 plantuml -tsvg docs/component_diagram.puml
 ```
 
-### Option 5: GitHub/GitLab
+### Вариант 5: GitHub/GitLab
 
-Both GitHub and GitLab render PlantUML diagrams automatically when you:
-1. Commit `.puml` files
-2. View them in the repository
-3. They render as images automatically
+И GitHub, и GitLab автоматически рендерят диаграммы PlantUML, когда вы:
+1. Коммитите файлы `.puml`
+2. Просматриваете их в репозитории
+3. Они автоматически отображаются как изображения
 
-## Diagram Files
+## Файлы диаграмм
 
-The generator creates:
-- `docs/component_diagram.puml` - Component dependencies
-- `docs/architecture_diagram.puml` - Architecture overview
+Генератор создает:
+- `docs/component_diagram.puml` - Зависимости компонентов
+- `docs/architecture_diagram.puml` - Обзор архитектуры
 
-These are also embedded in the README.md with code blocks.
+Они также встроены в README.md с блоками кода.
 
-## Customization
+## Настройка
 
-### Component Types
+### Типы компонентов
 
-The generator automatically categorizes components:
-- **API**: Components with "handler", "api", "endpoint" in name
-- **Service**: Components with "service", "business" in name
-- **Model**: Components with "model", "entity" in name
-- **Repository**: Components with "repo", "db" in name
-- **Client**: Components with "client" in name
+Генератор автоматически категоризирует компоненты:
+- **API**: Компоненты с "handler", "api", "endpoint" в имени
+- **Service**: Компоненты с "service", "business" в имени
+- **Model**: Компоненты с "model", "entity" в имени
+- **Repository**: Компоненты с "repo", "db" в имени
+- **Client**: Компоненты с "client" в имени
 
-### Customizing Diagrams
+### Настройка диаграмм
 
-You can edit the generated `.puml` files to:
-- Add custom styling
-- Group components differently
-- Add notes and annotations
-- Change colors and themes
+Вы можете редактировать сгенерированные файлы `.puml` для:
+- Добавления пользовательского стиля
+- Группировки компонентов по-другому
+- Добавления заметок и аннотаций
+- Изменения цветов и тем
 
-## Example Output
+## Пример вывода
 
 ```plantuml
 @startuml Component Dependencies
@@ -122,17 +122,17 @@ skinparam componentStyle rectangle
 
 title Component Dependencies
 
-component "handlers" as handlers #API#
-note right of handlers
-  Package: handlers
-  Files: 5
-end note
+package "API Components" {
+  component "handlers" as handlers
+  note right of handlers
+    Package: handlers
+    Files: 5
+  end note
+}
 
-component "services" as services #Service#
-note right of services
-  Package: services
-  Files: 3
-end note
+package "Service Components" {
+  component "services" as services
+}
 
 ' Dependencies
 services --> handlers
@@ -140,36 +140,36 @@ services --> handlers
 @enduml
 ```
 
-## Integration with README
+## Интеграция с README
 
-The diagrams are automatically included in the README.md:
-- Appear in "Architecture Diagrams" section
-- Placed at the top for visibility
-- Include instructions for rendering
+Диаграммы автоматически включаются в README.md:
+- Появляются в разделе "Architecture Diagrams"
+- Размещены вверху для видимости
+- Включают инструкции по рендерингу
 
-## Best Practices
+## Лучшие практики
 
-1. **Keep Components Focused**: Each component should have a clear purpose
-2. **Minimize Dependencies**: Avoid circular dependencies
-3. **Use Clear Names**: Component names should be descriptive
-4. **Review Regularly**: Update diagrams as architecture evolves
+1. **Держите компоненты сфокусированными**: Каждый компонент должен иметь четкую цель
+2. **Минимизируйте зависимости**: Избегайте циклических зависимостей
+3. **Используйте четкие имена**: Имена компонентов должны быть описательными
+4. **Регулярно проверяйте**: Обновляйте диаграммы по мере развития архитектуры
 
-## Troubleshooting
+## Устранение неполадок
 
-### No Diagrams Generated
+### Диаграммы не генерируются
 
-- Check that you have Go files in your project
-- Ensure components are detected (check console output)
-- Verify directory structure
+- Проверьте, что у вас есть Go файлы в проекте
+- Убедитесь, что компоненты обнаружены (проверьте вывод консоли)
+- Проверьте структуру директорий
 
-### Missing Dependencies
+### Отсутствующие зависимости
 
-- Some dependencies may not be detected if they're external packages
-- Internal dependencies within the same component aren't shown
-- Only inter-component dependencies are displayed
+- Некоторые зависимости могут не обнаруживаться, если это внешние пакеты
+- Внутренние зависимости в пределах одного компонента не отображаются
+- Отображаются только межкомпонентные зависимости
 
-### Diagram Too Complex
+### Диаграмма слишком сложная
 
-- Consider grouping related components
-- Use architecture diagram for high-level view
-- Edit `.puml` files to simplify if needed
+- Рассмотрите группировку связанных компонентов
+- Используйте диаграмму архитектуры для высокоуровневого вида
+- Редактируйте файлы `.puml` для упрощения при необходимости

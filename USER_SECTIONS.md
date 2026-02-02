@@ -1,88 +1,88 @@
-# Adding User Sections to Documentation
+# Добавление пользовательских разделов в документацию
 
-You can add your own custom documentation sections that will be automatically included in the generated README.md.
+Вы можете добавить свои собственные разделы документации, которые будут автоматически включены в сгенерированный README.md.
 
-## How It Works
+## Как это работает
 
-The documentation generator looks for markdown files in the `docs/` directory and includes them in the final README.md in a specific order:
+Генератор документации ищет markdown файлы в директории `docs/` и включает их в финальный README.md в определенном порядке:
 
-1. **Predefined User Sections** (added first)
-2. **Auto-generated Sections** (functions, API, tests, libraries)
-3. **Other User Files** (any other .md files in docs/)
+1. **Предопределенные пользовательские разделы** (добавляются первыми)
+2. **Автоматически генерируемые разделы** (функции, API, тесты, библиотеки)
+3. **Другие пользовательские файлы** (любые другие .md файлы в docs/)
 
-## Method 1: Predefined User Sections
+## Метод 1: Предопределенные пользовательские разделы
 
-These sections are recognized by name and appear at the top of the documentation:
+Эти разделы распознаются по имени и появляются в начале документации:
 
-### Architecture Section
+### Раздел Архитектуры
 
-Create `docs/user_architecture.md`:
+Создайте `docs/user_architecture.md`:
 
 ```markdown
-# Architecture
+# Архитектура
 
-## Overview
+## Обзор
 
-This service follows a microservices architecture...
+Этот сервис следует архитектуре микросервисов...
 
-## Components
+## Компоненты
 
-- **API Layer**: Handles HTTP/gRPC requests
-- **Service Layer**: Business logic
-- **Data Layer**: Database access
+- **API Слой**: Обрабатывает HTTP/gRPC запросы
+- **Сервисный Слой**: Бизнес-логика
+- **Слой Данных**: Доступ к базе данных
 ```
 
-### Database Structure Section
+### Раздел Структуры БД
 
-Create `docs/user_db_structure.md`:
+Создайте `docs/user_db_structure.md`:
 
 ```markdown
-# DB Structure
+# Структура БД
 
-## Tables
+## Таблицы
 
 ### users
-- id (UUID, Primary Key)
-- email (VARCHAR, Unique)
+- id (UUID, Первичный ключ)
+- email (VARCHAR, Уникальный)
 - created_at (TIMESTAMP)
 
 ### orders
-- id (UUID, Primary Key)
-- user_id (UUID, Foreign Key)
+- id (UUID, Первичный ключ)
+- user_id (UUID, Внешний ключ)
 - amount (DECIMAL)
 ```
 
-## Method 2: Custom User Sections
+## Метод 2: Пользовательские разделы
 
-You can add **any other markdown file** to the `docs/` directory, and it will be automatically included in the "Others" section.
+Вы можете добавить **любой другой markdown файл** в директорию `docs/`, и он будет автоматически включен в раздел "Прочее".
 
-### Example: Adding a Deployment Guide
+### Пример: Добавление руководства по развертыванию
 
-Create `docs/deployment.md`:
+Создайте `docs/deployment.md`:
 
 ```markdown
-# Deployment
+# Развертывание
 
-## Prerequisites
+## Требования
 
 - Docker
-- Kubernetes cluster
+- Kubernetes кластер
 
-## Steps
+## Шаги
 
-1. Build the image
-2. Push to registry
-3. Deploy to cluster
+1. Собрать образ
+2. Отправить в registry
+3. Развернуть в кластере
 ```
 
-### Example: Adding API Usage Examples
+### Пример: Добавление примеров использования API
 
-Create `docs/api_examples.md`:
+Создайте `docs/api_examples.md`:
 
 ```markdown
-# API Usage Examples
+# Примеры использования API
 
-## Creating a User
+## Создание пользователя
 
 ```bash
 curl -X POST https://api.example.com/users \
@@ -91,45 +91,45 @@ curl -X POST https://api.example.com/users \
 ```
 ```
 
-## File Naming
+## Именование файлов
 
-- **Predefined sections**: Must use exact names (`user_architecture.md`, `user_db_structure.md`)
-- **Custom sections**: Can use any name (e.g., `deployment.md`, `api_examples.md`, `troubleshooting.md`)
+- **Предопределенные разделы**: Должны использовать точные имена (`user_architecture.md`, `user_db_structure.md`)
+- **Пользовательские разделы**: Могут использовать любое имя (например, `deployment.md`, `api_examples.md`, `troubleshooting.md`)
 
-## Section Order in README.md
+## Порядок разделов в README.md
 
-The final README.md will have sections in this order:
+Финальный README.md будет иметь разделы в следующем порядке:
 
-1. **Architecture** (if `user_architecture.md` exists)
-2. **DB Structure** (if `user_db_structure.md` exists)
-3. **Functions** (auto-generated)
-4. **API Specification** (auto-generated)
-5. **Testing** (auto-generated)
-6. **Libraries Used** (auto-generated)
-7. **Others** (all other .md files from docs/)
+1. **Архитектура** (если существует `user_architecture.md`)
+2. **Структура БД** (если существует `user_db_structure.md`)
+3. **Функции** (автоматически генерируется)
+4. **Спецификация API** (автоматически генерируется)
+5. **Тестирование** (автоматически генерируется)
+6. **Используемые библиотеки** (автоматически генерируется)
+7. **Прочее** (все другие .md файлы из docs/)
 
-## Best Practices
+## Лучшие практики
 
-1. **Use clear titles**: Start each file with a `# Title` heading
-2. **Organize with subsections**: Use `##` for main sections, `###` for subsections
-3. **Keep files focused**: One topic per file
-4. **Use markdown formatting**: Code blocks, lists, tables, etc.
+1. **Используйте четкие заголовки**: Начинайте каждый файл с заголовка `# Заголовок`
+2. **Организуйте с подразделами**: Используйте `##` для основных разделов, `###` для подразделов
+3. **Держите файлы сфокусированными**: Одна тема на файл
+4. **Используйте форматирование markdown**: Блоки кода, списки, таблицы и т.д.
 
-## Example Structure
+## Пример структуры
 
 ```
 your-go-service/
 ├── docs/
-│   ├── user_architecture.md      # Predefined - appears first
-│   ├── user_db_structure.md      # Predefined - appears second
-│   ├── deployment.md              # Custom - appears in "Others"
-│   ├── api_examples.md            # Custom - appears in "Others"
-│   └── troubleshooting.md         # Custom - appears in "Others"
+│   ├── user_architecture.md      # Предопределенный - появляется первым
+│   ├── user_db_structure.md      # Предопределенный - появляется вторым
+│   ├── deployment.md              # Пользовательский - появляется в "Прочее"
+│   ├── api_examples.md            # Пользовательский - появляется в "Прочее"
+│   └── troubleshooting.md         # Пользовательский - появляется в "Прочее"
 ├── handlers/
 ├── services/
-└── README.md                      # Generated - includes all sections
+└── README.md                      # Сгенерированный - включает все разделы
 ```
 
-## Navigation
+## Навигация
 
-All user sections are automatically included in the navigation menu at the top of README.md, making it easy to jump to any section.
+Все пользовательские разделы автоматически включаются в меню навигации в верхней части README.md, что упрощает переход к любому разделу.

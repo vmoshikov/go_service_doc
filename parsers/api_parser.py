@@ -15,12 +15,12 @@ from config import Config
 
 
 class APIParser:
-    def __init__(self, go_dir: Path):
+    def __init__(self, go_dir: Path, config_path: Optional[Path] = None):
         self.go_dir = go_dir
         self.structs = {}
         self.ts_parser = TreeSitterGoParser()
         self.use_tree_sitter = self.ts_parser.is_available()
-        self.config = Config(go_dir)
+        self.config = Config(go_dir, config_path=config_path)
     
     def parse(self) -> Dict:
         """Parse all API endpoints from the codebase."""

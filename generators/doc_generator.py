@@ -12,15 +12,34 @@ from typing import Dict, List, Optional
 from generators.ai_description import generate_function_description, generate_endpoint_description
 from generators.plantuml_generator import PlantUMLGenerator
 from parsers.component_analyzer import ComponentAnalyzer
+from rules import is_enabled
 
 
 class DocumentationGenerator:
-    def __init__(self, go_dir: Path, docs_dir: Path, user_docs_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        go_dir: Path,
+        docs_dir: Path,
+        user_docs_dir: Optional[Path] = None,
+        repo_name: Optional[str] = None,
+        repo_ref: Optional[str] = None,
+        repo_web_url: Optional[str] = None,
+        rules: Optional[Dict] = None,
+    ):
         self.go_dir = go_dir
         self.docs_dir = docs_dir
-        self.user_docs_dir = user_docs_dir  # External user docs directory (from docs repo)
+        self.sections_dir = self.docs_dir / "sections"
+        self.diagrams_dir = self.docs_dir / "diagrams"
+        self.sections_dir.mkdir(parents=True, exist_ok=True)
+        self.diagrams_dir.mkdir(parents=True, exist_ok=True)
+        # Optional user-provided docs directory; if not set, defaults to docs_dir
+        self.user_docs_dir = user_docs_dir
         self.structs = {}  # Will be set from API spec
         self.plantuml_generator = PlantUMLGenerator()
+        self.repo_name = repo_name
+        self.repo_ref = repo_ref
+        self.repo_web_url = repo_web_url
+        self.rules = rules or {}
     
     def set_structs(self, structs: Dict):
         """Set struct definitions for JSON generation."""
@@ -28,11 +47,23 @@ class DocumentationGenerator:
     
     def _create_file_link(self, file_path: str, line: Optional[int] = None) -> str:
         """Create a clickable link to a file with optional line number."""
-        if line:
-            # GitHub-style link: file.go#L123
-            return f"[`{file_path}:{line}`]({file_path}#L{line})"
-        else:
-            return f"[`{file_path}`]({file_path})"
+        label = f"{file_path}:{line}" if line else file_path
+
+        # If we have a web URL, try to create a web link to source.
+        if self.repo_web_url and self.repo_ref:
+            base = self.repo_web_url.rstrip("/")
+            # GitLab commonly uses /-/blob/<ref>/<path>
+            if "gitlab" in base or "/-/" in base:
+                url = f"{base}/-/blob/{self.repo_ref}/{file_path}"
+            else:
+                # GitHub-style /blob/<ref>/<path>
+                url = f"{base}/blob/{self.repo_ref}/{file_path}"
+            if line:
+                url += f"#L{line}"
+            return f"[`{label}`]({url})"
+
+        # Default: do not create broken relative links in docs repo
+        return f"`{label}`"
     
     def _create_anchor_link(self, text: str) -> str:
         """Create an anchor link from text (for navigation).
@@ -72,29 +103,282 @@ class DocumentationGenerator:
         api_spec: Dict,
         tests: Dict,
         libraries: Dict,
+        imports: Optional[Dict] = None,
         output_file: str = 'README.md'
     ):
         """Generate complete documentation."""
         
         # Set structs for JSON generation
         self.structs = api_spec.get('structs', {})
-        
-        # Analyze components for diagrams
-        print("Analyzing components and dependencies...")
-        component_analyzer = ComponentAnalyzer(self.go_dir)
-        component_info = component_analyzer.analyze()
-        
-        # Generate PlantUML diagrams
-        self._generate_diagrams(component_info, api_spec)
-        
-        # Generate individual sections
-        self._generate_functions(functions, api_spec)
-        self._generate_api_spec(api_spec)
-        self._generate_tests(tests)
-        self._generate_libraries(libraries)
-        
-        # Combine all sections into README.md
+
+        component_info = None
+        if is_enabled(self.rules, "diagrams"):
+            print("Analyzing components and dependencies...")
+            component_analyzer = ComponentAnalyzer(self.go_dir)
+            component_info = component_analyzer.analyze()
+            self._generate_diagrams(component_info, api_spec)
+
+        # Generate individual sections (only enabled)
+        if is_enabled(self.rules, "functions"):
+            self._generate_functions(functions, api_spec)
+        if is_enabled(self.rules, "structures"):
+            self._generate_structures(api_spec.get("structs", {}) or {})
+        if is_enabled(self.rules, "api"):
+            self._generate_api_spec(api_spec)
+        if is_enabled(self.rules, "tests"):
+            self._generate_tests(tests)
+        if is_enabled(self.rules, "libraries"):
+            self._generate_libraries(libraries)
+        if is_enabled(self.rules, "imports"):
+            self._generate_imports(imports or {})
+
+        # Ensure standard top-level files exist
+        self._ensure_top_level_files()
+
+        # Combine README (always, but content depends on rules)
         self._combine_sections(output_file, component_info)
+
+    def _ensure_top_level_files(self):
+        """Ensure docs/<repo_name>/ has standard files."""
+        # RULES.md snapshot (do not override user edits)
+        rules_path = self.docs_dir / "RULES.md"
+        if not rules_path.exists():
+            snapshot = dict(self.rules or {})
+            repo_info = dict(snapshot.get("repo", {}) or {})
+            if self.repo_name:
+                repo_info.setdefault("name", self.repo_name)
+            if self.repo_ref:
+                repo_info.setdefault("ref", self.repo_ref)
+            if self.repo_web_url:
+                repo_info.setdefault("web_url", self.repo_web_url)
+            if repo_info:
+                snapshot["repo"] = repo_info
+
+            content = ["# RULES\n\n"]
+            content.append("Этот файл сгенерирован автоматически и отражает применённые правила генерации.\n\n")
+            content.append("```json\n")
+            content.append(json.dumps(snapshot, indent=2, ensure_ascii=False))
+            content.append("\n```\n")
+            rules_path.write_text("".join(content), encoding="utf-8")
+
+        # CHANGELOG.md placeholder (if changelog generator is not used)
+        changelog_path = self.docs_dir / "CHANGELOG.md"
+        if not changelog_path.exists():
+            changelog_path.write_text(
+                "# CHANGELOG\n\n"
+                "Этот файл зарезервирован под changelog. Если он не генерируется автоматически, заполните вручную.\n",
+                encoding="utf-8",
+            )
+
+    def _generate_imports(self, imports: Dict):
+        """Generate imports.md (imports overview)."""
+        content = ["# Импорты\n"]
+
+        module = imports.get("module") if isinstance(imports, dict) else None
+        if module:
+            content.append(f"**Модуль:** `{module}`\n\n")
+
+        import_list = imports.get("imports", []) if isinstance(imports, dict) else []
+        if not import_list:
+            content.append("Импорты не найдены.\n")
+            (self.sections_dir / "imports.md").write_text("\n".join(content), encoding="utf-8")
+            return
+
+        content.append("Файл сгенерирован из Go‑исходников и показывает использование импортов.\n\n")
+
+        # Group imports for better menu (H2 sections in README)
+        stdlib = [i for i in import_list if i.get("is_stdlib")]
+        non_stdlib = [i for i in import_list if not i.get("is_stdlib")]
+        local = [i for i in non_stdlib if (i.get("local") or {}).get("is_local")]
+        external = [i for i in non_stdlib if i not in local]
+
+        groups = [
+            ("Стандартная библиотека", stdlib),
+            ("Внешние зависимости", external),
+            ("Локальные пакеты", local),
+        ]
+
+        for group_title, group_items in groups:
+            if not group_items:
+                continue
+            content.append(f"## {group_title}\n\n")
+
+            for imp in group_items:
+                path = imp.get("path", "")
+                is_stdlib = imp.get("is_stdlib", False)
+                aliases = imp.get("aliases", [])
+                used = imp.get("used", {}) or {}
+                files = imp.get("files", []) or []
+                local = imp.get("local", {}) or {}
+                external = imp.get("external", {}) or {}
+
+                content.append(f"### {path}\n\n")
+                content.append(
+                    f"- **Тип:** {'stdlib' if is_stdlib else ('local' if local.get('is_local') else 'external')}\n"
+                )
+                if aliases:
+                    content.append(f"- **Алиасы:** {', '.join(f'`{a}`' for a in aliases)}\n")
+                if local.get("is_local"):
+                    content.append(f"- **Локальная директория пакета:** `{local.get('dir')}`\n")
+                if external.get("repo_root"):
+                    content.append(f"- **📥 Repo:** `{external.get('repo_root')}`\n")
+                    if external.get("clone_url"):
+                        content.append(f"- **🔗 Clone URL:** `{external.get('clone_url')}`\n")
+                    if external.get("error"):
+                        content.append(f"- **⚠️ Ошибка клонирования/парсинга:** `{external.get('error')}`\n")
+                content.append("\n")
+
+                selectors = used.get("selectors", []) or []
+                calls = used.get("calls", []) or []
+                type_candidates = used.get("type_candidates", []) or []
+
+                if calls:
+                    content.append("### Вызовы\n\n")
+                    content.append(", ".join(f"`{s}`" for s in sorted(set(calls))) + "\n\n")
+
+                if type_candidates:
+                    content.append("### Кандидаты на типы\n\n")
+                    content.append(", ".join(f"`{s}`" for s in sorted(set(type_candidates))) + "\n\n")
+
+                if selectors:
+                    content.append("### Селекторы (любое использование `pkg.X`)\n\n")
+                    content.append(", ".join(f"`{s}`" for s in sorted(set(selectors))) + "\n\n")
+
+                if files:
+                    content.append("### Используется в файлах\n\n")
+                    for fe in files:
+                        file_path = fe.get("file")
+                        content.append(f"- 📄 {self._create_file_link(file_path)}\n")
+                    content.append("\n")
+
+                # If this is a local import, try to print definitions of referenced types.
+                local_types = (local.get("types") or {}) if isinstance(local, dict) else {}
+                if local.get("is_local") and local_types and type_candidates:
+                    content.append("### Определения локальных типов (best effort)\n\n")
+                    for t in sorted(set(type_candidates)):
+                        info = local_types.get(t)
+                        if not info:
+                            continue
+                        kind = info.get("kind", "type")
+                        src_file = info.get("file")
+                        src_line = info.get("line")
+                        content.append(f"#### {t} ({kind})\n\n")
+                        if src_file:
+                            try:
+                                rel = str(Path(src_file).relative_to(self.go_dir))
+                            except Exception:
+                                rel = str(src_file)
+                            content.append(f"*Определено в: {self._create_file_link(rel, src_line)}*\n\n")
+                        if kind == "struct":
+                            fields = info.get("fields", []) or []
+                            if fields:
+                                content.append("| Поле | Тип | JSON |\n")
+                                content.append("|------|-----|------|\n")
+                                for f in fields:
+                                    content.append(
+                                        f"| `{f.get('name','')}` | `{f.get('type','')}` | `{f.get('json_tag','')}` |\n"
+                                    )
+                                content.append("\n")
+                        else:
+                            definition = info.get("definition")
+                            if definition:
+                                content.append("```go\n")
+                                content.append(definition)
+                                content.append("\n```\n\n")
+
+                # External repo types (if cloned)
+                ext_types = (external.get("types") or {}) if isinstance(external, dict) else {}
+                if (not local.get("is_local")) and ext_types and type_candidates:
+                    content.append("### Определения типов из внешнего репозитория (best effort)\n\n")
+                    for t in sorted(set(type_candidates)):
+                        info = ext_types.get(t)
+                        if not info:
+                            continue
+                        kind = info.get("kind", "type")
+                        src_file = info.get("file")
+                        src_line = info.get("line")
+                        content.append(f"#### {t} ({kind})\n\n")
+                        if src_file:
+                            label = f"{src_file}:{src_line}" if src_line else src_file
+                            content.append(f"*Определено в:* `{label}`\n\n")
+                        if kind == "struct":
+                            fields = info.get("fields", []) or []
+                            if fields:
+                                content.append("| Поле | Тип | JSON |\n")
+                                content.append("|------|-----|------|\n")
+                                for f in fields:
+                                    content.append(
+                                        f"| `{f.get('name','')}` | `{f.get('type','')}` | `{f.get('json_tag','')}` |\n"
+                                    )
+                                content.append("\n")
+                        else:
+                            definition = info.get("definition")
+                            if definition:
+                                content.append("```go\n")
+                                content.append(definition)
+                                content.append("\n```\n\n")
+
+        (self.sections_dir / "imports.md").write_text("\n".join(content), encoding="utf-8")
+
+    def _generate_structures(self, structs: Dict):
+        """Generate structures.md (all types/structs)."""
+        content = ["# Структуры и типы\n"]
+
+        if not structs:
+            content.append("Структуры/типы не найдены.\n")
+            (self.sections_dir / "structures.md").write_text("\n".join(content), encoding="utf-8")
+            return
+
+        # Group by first-level directory of definition file
+        grouped: Dict[str, List[tuple]] = {}
+        for name, info in structs.items():
+            file_path = info.get("file", "")
+            top = file_path.split("/", 1)[0] if "/" in file_path else "."
+            grouped.setdefault(top, []).append((name, info))
+
+        content.append("## Меню\n\n")
+        for top in sorted(grouped.keys()):
+            title = "root" if top == "." else top
+            content.append(f"- 📁 [{title}](#{self._create_anchor_link(title)})\n")
+        content.append("\n---\n\n")
+
+        for top in sorted(grouped.keys()):
+            title = "root" if top == "." else top
+            content.append(f"## {title}\n\n")
+            for name, info in sorted(grouped[top], key=lambda x: x[0]):
+                kind = info.get("kind", "type")
+                file_path = info.get("file")
+                line = info.get("line")
+                content.append(f"### {name} ({kind})\n\n")
+                if file_path:
+                    content.append(f"- 📍 *Определено в:* {self._create_file_link(file_path, line)}\n")
+                if kind == "struct":
+                    fields = info.get("fields", []) or []
+                    if fields:
+                        content.append("\n| Поле | Тип | JSON |\n")
+                        content.append("|------|-----|------|\n")
+                        for f in fields:
+                            content.append(
+                                f"| `{f.get('name','')}` | `{f.get('type','')}` | `{f.get('json_tag','')}` |\n"
+                            )
+                        content.append("\n")
+                    # Add JSON example
+                    struct_json = self._struct_to_json(info)
+                    if struct_json:
+                        content.append("**Пример (JSON):**\n\n")
+                        content.append("```json")
+                        content.append(json.dumps(struct_json, indent=2, ensure_ascii=False))
+                        content.append("```\n\n")
+                else:
+                    definition = info.get("definition")
+                    if definition:
+                        content.append("\n```go\n")
+                        content.append(definition)
+                        content.append("\n```\n\n")
+
+            content.append("\n")
+
+        (self.sections_dir / "structures.md").write_text("\n".join(content), encoding="utf-8")
     
     def _get_struct_json_for_type(self, type_name: str) -> Optional[Dict]:
         """Get JSON representation of a struct type."""
@@ -164,34 +448,113 @@ class DocumentationGenerator:
         return {}
     
     def _generate_functions(self, functions: List[Dict], api_spec: Dict):
-        """Generate functions.md and directory-based README.md files."""
+        """Generate functions.md (single file with menu + details)."""
         if not functions:
             # Still create empty functions.md
-            content = ["# Functions\n\nNo functions found.\n"]
-            output_path = self.docs_dir / 'functions.md'
+            content = ["# Функции\n\nФункции не найдены.\n"]
+            output_path = self.sections_dir / 'functions.md'
             output_path.write_text('\n'.join(content), encoding='utf-8')
             return
-        
-        # Group functions by directory
-        functions_by_dir = {}
+
+        # Group by first-level directory (top-level)
+        grouped: Dict[str, List[Dict]] = {}
         for func in functions:
-            file_path = Path(func['file'])
-            # Get directory (relative to go_dir)
-            dir_path = file_path.parent if file_path.parent != Path('.') else Path('')
-            dir_key = str(dir_path) if dir_path else '.'
-            
-            if dir_key not in functions_by_dir:
-                functions_by_dir[dir_key] = []
-            functions_by_dir[dir_key].append(func)
-        
-        # Generate README.md for each directory
-        directory_readmes = {}
-        for dir_key, dir_funcs in sorted(functions_by_dir.items()):
-            dir_readme = self._generate_directory_readme(dir_key, dir_funcs)
-            directory_readmes[dir_key] = dir_readme
-        
-        # Generate parent functions.md with links to directories
-        self._generate_parent_functions_md(functions_by_dir, directory_readmes)
+            fp = func.get("file", "")
+            top = fp.split("/", 1)[0] if "/" in fp else "."
+            grouped.setdefault(top, []).append(func)
+
+        content: List[str] = ["# Функции\n"]
+        content.append("## Меню\n\n")
+
+        def func_heading(file_path: str, line: Optional[int], name: str) -> str:
+            """
+            We avoid raw HTML anchors (<a id=...>) because users see them in the file.
+            Instead, make the heading text unique so the generated anchor is unique too.
+            """
+            ln = line or 0
+            return f"{name} ({file_path}:{ln})"
+
+        # Build full menu: dir -> file -> functions
+        for top in sorted(grouped.keys()):
+            title = "root" if top == "." else top
+            content.append(f"- 📁 [{title}](#{self._create_anchor_link(title)})\n")
+
+            # Group by file within this top-level directory
+            by_file: Dict[str, List[Dict]] = {}
+            for f in grouped[top]:
+                by_file.setdefault(f["file"], []).append(f)
+
+            for file_path in sorted(by_file.keys()):
+                content.append(f"  - 📄 [{file_path}](#{self._create_anchor_link(file_path)})\n")
+                for func in sorted(by_file[file_path], key=lambda x: (x.get("name", ""), x.get("line", 0))):
+                    heading = func_heading(file_path, func.get("line"), func.get("name", ""))
+                    label = func.get("name", "")
+                    content.append(f"    - 🔗 [{label}](#{self._create_anchor_link(heading)})\n")
+
+        content.append("\n---\n\n")
+
+        for top in sorted(grouped.keys()):
+            title = "root" if top == "." else top
+            content.append(f"## {title}\n\n")
+
+            # Group by file within this top-level directory
+            by_file: Dict[str, List[Dict]] = {}
+            for f in grouped[top]:
+                by_file.setdefault(f["file"], []).append(f)
+
+            for file_path in sorted(by_file.keys()):
+                content.append(f"### {file_path}\n\n")
+                content.append(f"- 📄 Исходный файл: {self._create_file_link(file_path)}\n\n")
+
+                for func in sorted(by_file[file_path], key=lambda x: (x.get("name", ""), x.get("line", 0))):
+                    heading = func_heading(file_path, func.get("line"), func.get("name", ""))
+                    content.append(f"#### {heading}\n\n")
+
+                    description = func.get("comment", "").strip()
+                    if not description:
+                        description = generate_function_description(
+                            func_name=func["name"],
+                            params=func.get("params", ""),
+                            returns=func.get("returns", ""),
+                            receiver=func.get("receiver"),
+                            file_path=func.get("file"),
+                        )
+                    if description:
+                        content.append(f"{description}\n\n")
+
+                    sig_parts = []
+                    if func.get("receiver"):
+                        sig_parts.append(f"func {func['receiver']}")
+                    else:
+                        sig_parts.append("func")
+                    sig_parts.append(f"{func['name']}({func.get('params','')})")
+                    if func.get("returns"):
+                        sig_parts.append(func["returns"])
+
+                    content.append(f"```go\n{' '.join(sig_parts)}\n```\n\n")
+
+                    struct_types = func.get("struct_types", {}) or {}
+                    if struct_types.get("request") or struct_types.get("response"):
+                        for struct_type in struct_types.get("request", []):
+                            struct_json = self._get_struct_json_for_type(struct_type)
+                            if struct_json:
+                                content.append(f"**🧾 Тип запроса: `{struct_type}`**\n\n")
+                                content.append("```json")
+                                content.append(json.dumps(struct_json, indent=2, ensure_ascii=False))
+                                content.append("```\n\n")
+                        for struct_type in struct_types.get("response", []):
+                            struct_json = self._get_struct_json_for_type(struct_type)
+                            if struct_json:
+                                content.append(f"**🧾 Тип ответа: `{struct_type}`**\n\n")
+                                content.append("```json")
+                                content.append(json.dumps(struct_json, indent=2, ensure_ascii=False))
+                                content.append("```\n\n")
+
+                    content.append(f"📍 *Расположение:* {self._create_file_link(file_path, func.get('line'))}\n\n")
+
+                content.append("\n")
+
+        (self.sections_dir / "functions.md").write_text("\n".join(content), encoding="utf-8")
     
     def _generate_directory_readme(self, dir_key: str, functions: List[Dict]) -> Dict:
         """Generate README.md for a specific directory."""
@@ -199,14 +562,14 @@ class DocumentationGenerator:
         
         # Title based on directory
         if dir_key == '.':
-            title = "# Root Functions\n"
+            title = "# Функции корня проекта\n"
             dir_display = "root"
         else:
-            title = f"# Functions in `{dir_key}`\n"
+            title = f"# Функции в `{dir_key}`\n"
             dir_display = dir_key
         
         content.append(title)
-        content.append(f"This directory contains {len(functions)} function(s).\n\n")
+        content.append(f"В этой директории найдено функций: {len(functions)}.\n\n")
         content.append("---\n\n")
         
         # Group by file within directory
@@ -266,7 +629,7 @@ class DocumentationGenerator:
                     for struct_type in struct_types.get('request', []):
                         struct_json = self._get_struct_json_for_type(struct_type)
                         if struct_json:
-                            content.append(f"**Request Type: `{struct_type}`**\n\n")
+                            content.append(f"**Тип запроса: `{struct_type}`**\n\n")
                             content.append("```json")
                             content.append(json.dumps(struct_json, indent=2))
                             content.append("```\n\n")
@@ -275,7 +638,7 @@ class DocumentationGenerator:
                     for struct_type in struct_types.get('response', []):
                         struct_json = self._get_struct_json_for_type(struct_type)
                         if struct_json:
-                            content.append(f"**Response Type: `{struct_type}`**\n\n")
+                            content.append(f"**Тип ответа: `{struct_type}`**\n\n")
                             content.append("```json")
                             content.append(json.dumps(struct_json, indent=2))
                             content.append("```\n\n")
@@ -286,23 +649,20 @@ class DocumentationGenerator:
                 else:
                     full_file_path = f"{dir_key}/{file_name}"
                 file_link = self._create_file_link(full_file_path, func.get('line'))
-                content.append(f"*Location: {file_link}*\n\n")
+                content.append(f"*Расположение: {file_link}*\n\n")
         
-        # Write README.md to the directory
+        # Write directory docs only under docs_dir (do not modify analyzed repo)
+        functions_root = self.docs_dir / "functions"
         if dir_key == '.':
-            # For root directory, create in docs directory
-            readme_path = self.docs_dir / 'functions_root.md'
+            readme_path = functions_root / "root.md"
         else:
-            readme_path = self.go_dir / dir_key / 'README.md'
-            readme_path.parent.mkdir(parents=True, exist_ok=True)
+            readme_path = functions_root / dir_key / "README.md"
+        readme_path.parent.mkdir(parents=True, exist_ok=True)
         
         readme_path.write_text('\n'.join(content), encoding='utf-8')
         
-        # Return relative path from go_dir
-        if dir_key == '.':
-            rel_path = f"docs/functions_root.md"
-        else:
-            rel_path = str(readme_path.relative_to(self.go_dir))
+        # Return relative path from docs_dir for linking
+        rel_path = str(readme_path.relative_to(self.docs_dir))
         
         return {
             'path': rel_path,
@@ -312,9 +672,9 @@ class DocumentationGenerator:
     
     def _generate_parent_functions_md(self, functions_by_dir: Dict, directory_readmes: Dict):
         """Generate parent functions.md with links to directory READMEs."""
-        content = ["# Functions\n"]
-        content.append("Functions are organized by directory. Click on a directory to see detailed function documentation.\n\n")
-        content.append("## Directory Index\n\n")
+        content = ["# Функции\n"]
+        content.append("Функции сгруппированы по директориям. Откройте директорию, чтобы увидеть подробную документацию.\n\n")
+        content.append("## Индекс директорий\n\n")
         
         for dir_key in sorted(functions_by_dir.keys()):
             dir_funcs = functions_by_dir[dir_key]
@@ -322,18 +682,18 @@ class DocumentationGenerator:
             
             if dir_key == '.':
                 dir_display = "Root"
-                readme_path = dir_readme.get('path', 'docs/functions_root.md')
+                readme_path = dir_readme.get('path', 'functions/root.md')
             else:
                 dir_display = dir_key
-                readme_path = dir_readme.get('path', f"{dir_key}/README.md")
+                readme_path = dir_readme.get('path', f"functions/{dir_key}/README.md")
             
             func_count = len(dir_funcs)
             content.append(f"### {dir_display}\n")
-            content.append(f"- **Functions:** {func_count}\n")
-            content.append(f"- **Documentation:** [{readme_path}]({readme_path})\n\n")
+            content.append(f"- **Функций:** {func_count}\n")
+            content.append(f"- **Документация:** [{readme_path}]({readme_path})\n\n")
             
             # List functions in this directory (group by name to avoid duplicates)
-            content.append("**Functions:**\n")
+            content.append("**Функции:**\n")
             
             # Group functions by name
             functions_by_name = {}
@@ -386,16 +746,16 @@ class DocumentationGenerator:
             
             content.append("\n")
         
-        output_path = self.docs_dir / 'functions.md'
+        output_path = self.sections_dir / 'functions.md'
         output_path.write_text('\n'.join(content), encoding='utf-8')
     
     def _generate_api_spec(self, api_spec: Dict):
         """Generate api.md"""
-        content = ["# API Specification\n"]
+        content = ["# Спецификация API\n"]
         
         # gRPC endpoints
         if api_spec.get('grpc'):
-            content.append("## gRPC Endpoints\n\n")
+            content.append("## gRPC методы\n\n")
             
             for endpoint in api_spec['grpc']:
                 content.append(f"### {endpoint['method']}\n")
@@ -414,41 +774,41 @@ class DocumentationGenerator:
                 
                 # Request type with external link if available
                 request_type = endpoint.get('request_type', '')
-                request_display = f"**Request Type:** `{request_type}`"
+                request_display = f"**Тип запроса:** `{request_type}`"
                 if endpoint.get('proto_link'):
                     proto_link = endpoint['proto_link']
-                    request_display += f" - [View Proto Definition]({proto_link})"
+                    request_display += f" - [Открыть proto]({proto_link})"
                 content.append(f"{request_display}\n")
                 
                 # Response type with external link if available
                 response_type = endpoint.get('response_type', '')
-                response_display = f"**Response Type:** `{response_type}`"
+                response_display = f"**Тип ответа:** `{response_type}`"
                 if endpoint.get('proto_link'):
-                    response_display += f" - [View Proto Definition]({proto_link})"
+                    response_display += f" - [Открыть proto]({proto_link})"
                 content.append(f"{response_display}\n\n")
                 
                 # Add proto repository info if available
                 if endpoint.get('proto_repo'):
-                    content.append(f"*Proto definitions from: {endpoint['proto_repo']}*\n\n")
+                    content.append(f"*Proto-определения из: {endpoint['proto_repo']}*\n\n")
                 
                 if endpoint['request_json']:
-                    content.append("**Request (JSON):**\n")
+                    content.append("**Запрос (JSON):**\n")
                     content.append("```json")
                     content.append(json.dumps(endpoint['request_json'], indent=2))
                     content.append("```\n\n")
                 
                 if endpoint['response_json']:
-                    content.append("**Response (JSON):**\n")
+                    content.append("**Ответ (JSON):**\n")
                     content.append("```json")
                     content.append(json.dumps(endpoint['response_json'], indent=2))
                     content.append("```\n\n")
                 
                 file_link = self._create_file_link(endpoint['file'])
-                content.append(f"*Defined in: {file_link}*\n\n")
+                content.append(f"*Определено в: {file_link}*\n\n")
         
         # REST endpoints
         if api_spec.get('rest'):
-            content.append("## REST Endpoints\n\n")
+            content.append("## REST эндпоинты\n\n")
             
             for endpoint in api_spec['rest']:
                 method = endpoint['method']
@@ -472,66 +832,66 @@ class DocumentationGenerator:
                 content.append(f"**Router:** {endpoint['router']}\n\n")
                 
                 file_link = self._create_file_link(endpoint['file'])
-                content.append(f"*Defined in: {file_link}*\n\n")
+                content.append(f"*Определено в: {file_link}*\n\n")
         
         if not api_spec.get('grpc') and not api_spec.get('rest'):
-            content.append("No API endpoints found.\n")
+            content.append("API эндпоинты не найдены.\n")
         
-        output_path = self.docs_dir / 'api.md'
+        output_path = self.sections_dir / 'api.md'
         output_path.write_text('\n'.join(content), encoding='utf-8')
     
     def _generate_tests(self, tests: Dict):
-        """Generate test.md"""
-        content = ["# Testing\n"]
+        """Generate tests.md"""
+        content = ["# Тестирование\n"]
         
         if tests.get('tests'):
-            content.append("## Test Functions\n\n")
+            content.append("## Тесты\n\n")
             for test in tests['tests']:
                 content.append(f"### {test['name']}\n")
                 if test['comment']:
                     content.append(f"{test['comment']}\n\n")
                 if test['subtests']:
-                    content.append("**Subtests:**\n")
+                    content.append("**Сабтесты:**\n")
                     for subtest in test['subtests']:
                         content.append(f"- {subtest}\n")
                 file_link = self._create_file_link(test['file'], test.get('line'))
-                content.append(f"*Location: {file_link}*\n\n")
+                content.append(f"*Расположение: {file_link}*\n\n")
         
         if tests.get('benchmarks'):
-            content.append("## Benchmarks\n\n")
+            content.append("## Бенчмарки\n\n")
             for bench in tests['benchmarks']:
                 content.append(f"### {bench['name']}\n")
                 if bench['comment']:
                     content.append(f"{bench['comment']}\n\n")
                 file_link = self._create_file_link(bench['file'], bench.get('line'))
-                content.append(f"*Location: {file_link}*\n\n")
+                content.append(f"*Расположение: {file_link}*\n\n")
         
         if tests.get('examples'):
-            content.append("## Examples\n\n")
+            content.append("## Примеры\n\n")
             for example in tests['examples']:
                 content.append(f"### {example['name']}\n")
                 if example['comment']:
                     content.append(f"{example['comment']}\n\n")
                 file_link = self._create_file_link(example['file'], example.get('line'))
-                content.append(f"*Location: {file_link}*\n\n")
+                content.append(f"*Расположение: {file_link}*\n\n")
         
         if not tests.get('tests') and not tests.get('benchmarks') and not tests.get('examples'):
-            content.append("No tests found.\n")
+            content.append("Тесты не найдены.\n")
         
-        output_path = self.docs_dir / 'test.md'
+        output_path = self.sections_dir / 'tests.md'
         output_path.write_text('\n'.join(content), encoding='utf-8')
     
     def _generate_libraries(self, libraries: Dict):
         """Generate libraries.md"""
-        content = ["# Libraries Used\n"]
+        content = ["# Используемые библиотеки\n"]
         
         if libraries.get('module'):
-            content.append(f"**Module:** `{libraries['module']}`\n\n")
+            content.append(f"**Модуль:** `{libraries['module']}`\n\n")
         
         if libraries.get('dependencies'):
-            content.append("## Dependencies\n\n")
-            content.append("| Library | Version | Notes |\n")
-            content.append("|---------|---------|-------|\n")
+            content.append("## Зависимости\n\n")
+            content.append("| Библиотека | Версия | Примечание |\n")
+            content.append("|-----------|--------|------------|\n")
             
             for dep in sorted(libraries['dependencies'], key=lambda x: x['name']):
                 name = dep['name']
@@ -540,14 +900,14 @@ class DocumentationGenerator:
                 content.append(f"| `{name}` | `{version}` | {comment} |\n")
         
         if libraries.get('replace'):
-            content.append("\n## Replace Directives\n\n")
+            content.append("\n## Replace директивы\n\n")
             for replace in libraries['replace']:
                 content.append(f"- `{replace['old']}` => `{replace.get('new', '')}`\n")
         
         if not libraries.get('dependencies'):
-            content.append("No dependencies found.\n")
+            content.append("Зависимости не найдены.\n")
         
-        output_path = self.docs_dir / 'libraries.md'
+        output_path = self.sections_dir / 'libraries.md'
         output_path.write_text('\n'.join(content), encoding='utf-8')
     
     def _generate_diagrams(self, component_info: Dict, api_spec: Dict):
@@ -559,12 +919,12 @@ class DocumentationGenerator:
         
         # Generate component dependency diagram
         component_diagram = self.plantuml_generator.generate_component_diagram(components)
-        diagram_path = self.docs_dir / 'component_diagram.puml'
+        diagram_path = self.diagrams_dir / 'component_diagram.puml'
         diagram_path.write_text(component_diagram, encoding='utf-8')
         
         # Generate architecture diagram
         arch_diagram = self.plantuml_generator.generate_architecture_diagram(components, api_spec)
-        arch_path = self.docs_dir / 'architecture_diagram.puml'
+        arch_path = self.diagrams_dir / 'architecture_diagram.puml'
         arch_path.write_text(arch_diagram, encoding='utf-8')
         
         print(f"Generated PlantUML diagrams: {diagram_path}, {arch_path}")
@@ -584,166 +944,181 @@ class DocumentationGenerator:
     
     def _combine_sections(self, output_file: str, component_info: Dict = None):
         """Combine all documentation sections into README.md"""
-        sections = []
         section_titles = []  # For navigation
-        
-        # User-provided sections (optional)
-        # First check external user docs directory (from docs repo)
-        user_docs_source = self.user_docs_dir if self.user_docs_dir else self.docs_dir
-        
-        user_sections = [
-            ('user_architecture.md', 'Architecture'),
-            ('user_db_structure.md', 'DB Structure'),
+
+        titles_ru = {
+            "architecture_user": "Архитектура",
+            "db_user": "Структура БД",
+            "diagrams": "Диаграммы архитектуры",
+            "imports": "Импорты",
+            "structures": "Структуры и типы",
+            "functions": "Функции",
+            "api": "Спецификация API",
+            "tests": "Тестирование",
+            "libraries": "Используемые библиотеки",
+            "others_user": "Прочее",
+        }
+
+        order = self.rules.get("readme_order") or [
+            "architecture_user",
+            "db_user",
+            "diagrams",
+            "imports",
+            "structures",
+            "functions",
+            "api",
+            "tests",
+            "libraries",
+            "others_user",
         ]
-        
-        # Auto-generated sections
-        auto_sections = [
-            ('functions.md', 'Functions'),
-            ('api.md', 'API Specification'),
-            ('test.md', 'Testing'),
-            ('libraries.md', 'Libraries Used'),
-        ]
-        
-        # Add user sections first (from external docs or local)
-        for filename, title in user_sections:
-            # Try external user docs first
-            file_path = None
-            if self.user_docs_dir and self.user_docs_dir.exists():
-                file_path = self.user_docs_dir / filename
-                if not file_path.exists():
-                    file_path = None
-            
-            # Fallback to local docs
-            if not file_path:
-                file_path = self.docs_dir / filename
-            
-            if file_path.exists():
-                content = file_path.read_text(encoding='utf-8')
-                sections.append((title, content))
-                # Extract titles for navigation
-                titles = self._extract_section_titles(content)
-                section_titles.append((title, titles))
-        
-        # Add auto-generated sections
-        for filename, title in auto_sections:
-            file_path = self.docs_dir / filename
-            if file_path.exists():
-                content = file_path.read_text(encoding='utf-8')
-                sections.append((title, content))
-                # Extract titles for navigation
-                titles = self._extract_section_titles(content)
-                section_titles.append((title, titles))
-        
-        # Check for other user files (from external docs or local)
-        other_files = []
-        
-        # Check external user docs directory
-        if self.user_docs_dir and self.user_docs_dir.exists():
-            other_files.extend([
-                f for f in self.user_docs_dir.iterdir()
-                if f.is_file() and f.suffix == '.md' and f.name not in [
-                    'user_architecture.md', 'user_db_structure.md',
-                    'functions.md', 'api.md', 'test.md', 'libraries.md'
-                ]
-            ])
-        
-        # Check local docs directory
-        if self.docs_dir.exists():
-            other_files.extend([
-                f for f in self.docs_dir.iterdir()
-                if f.is_file() and f.suffix == '.md' and f.name not in [
-                    'user_architecture.md', 'user_db_structure.md',
-                    'functions.md', 'api.md', 'test.md', 'libraries.md'
-                ]
-            ])
-        
-        # Remove duplicates
-        seen = set()
-        unique_files = []
-        for f in other_files:
-            if f.name not in seen:
-                seen.add(f.name)
-                unique_files.append(f)
-        
-        if unique_files:
-            sections.append(('Others', ''))
-            for other_file in sorted(unique_files, key=lambda x: x.name):
-                content = other_file.read_text(encoding='utf-8')
-                sections.append((other_file.stem, content))
-                titles = self._extract_section_titles(content)
-                section_titles.append((other_file.stem, titles))
-        
-        # Combine into README
-        readme_content = []
-        readme_content.append("# Service Documentation\n")
-        readme_content.append("This documentation is automatically generated from the Go service codebase.\n\n")
-        
-        # Add Architecture Diagrams section
-        if component_info and component_info.get('components'):
-            readme_content.append("## Architecture Diagrams\n\n")
-            
-            # Component Dependencies Diagram
-            component_diagram_path = self.docs_dir / 'component_diagram.puml'
-            if component_diagram_path.exists():
-                readme_content.append("### Component Dependencies\n\n")
-                readme_content.append("```plantuml")
-                readme_content.append(component_diagram_path.read_text(encoding='utf-8'))
-                readme_content.append("```\n\n")
-                readme_content.append("*To render this diagram, use a PlantUML renderer or view it in your IDE/editor with PlantUML support.*\n\n")
-            
-            # Architecture Diagram
-            arch_diagram_path = self.docs_dir / 'architecture_diagram.puml'
-            if arch_diagram_path.exists():
-                readme_content.append("### Service Architecture\n\n")
-                readme_content.append("```plantuml")
-                readme_content.append(arch_diagram_path.read_text(encoding='utf-8'))
-                readme_content.append("```\n\n")
-                readme_content.append("*To render this diagram, use a PlantUML renderer or view it in your IDE/editor with PlantUML support.*\n\n")
-            
-            readme_content.append("---\n\n")
-        
-        # Add Navigation section
+
+        user_dir = self.user_docs_dir if self.user_docs_dir else (self.docs_dir / "user")
+
+        def read_if_exists(p: Path) -> Optional[str]:
+            try:
+                return p.read_text(encoding="utf-8") if p.exists() else None
+            except Exception:
+                return None
+
+        def add_section(name: str, content: str):
+            readme_parts.append(content)
+            readme_parts.append("\n---\n\n")
+
+        readme_parts: List[str] = []
+        readme_parts.append("# Документация сервиса\n")
+        readme_parts.append("Документация автоматически сгенерирована из Go‑кода.\n\n")
+
+        # Build sections content according to order and enabled flags
+        sections_content: List[tuple] = []
+
+        def menu_only(title: str, rel_path: str) -> Optional[str]:
+            p = self.docs_dir / rel_path
+            c = read_if_exists(p)
+            if not c:
+                return None
+            # show only H2 menu (avoid huge output)
+            h2 = []
+            for level, t in self._extract_section_titles(c):
+                if level != "h2":
+                    continue
+                if t.strip().lower() in {"меню", "menu"}:
+                    continue
+                h2.append(t)
+            parts = [f"## {title}\n\n"]
+            parts.append(f"- 📄 Подробнее: [{rel_path}]({rel_path})\n")
+            if h2:
+                parts.append("- 📚 Меню:\n")
+                for t in h2:
+                    parts.append(f"  - 🔗 [{t}]({rel_path}#{self._create_anchor_link(t)})\n")
+            parts.append("\n")
+            return "".join(parts)
+
+        for key in order:
+            if not is_enabled(self.rules, key):
+                continue
+
+            title = titles_ru.get(key, key)
+
+            if key == "architecture_user":
+                c = menu_only(title, "user/architecture.md")
+                if not c:
+                    # backward compatibility
+                    c = menu_only(title, "user_architecture.md")
+                if c:
+                    sections_content.append((title, c))
+            elif key == "db_user":
+                c = menu_only(title, "user/db.md")
+                if not c:
+                    c = menu_only(title, "user_db_structure.md")
+                if c:
+                    sections_content.append((title, c))
+            elif key == "diagrams":
+                if component_info and component_info.get("components"):
+                    parts = [f"## {title}\n\n"]
+                    parts.append("Диаграммы сохраняются в директорию `diagrams/`.\n\n")
+                    parts.append("- 📄 Подробнее: [diagrams/](diagrams/)\n")
+                    component_diagram_path = self.diagrams_dir / "component_diagram.puml"
+                    if component_diagram_path.exists():
+                        parts.append("- 🔗 [Зависимости компонентов](diagrams/component_diagram.puml)\n")
+                    arch_diagram_path = self.diagrams_dir / "architecture_diagram.puml"
+                    if arch_diagram_path.exists():
+                        parts.append("- 🔗 [Архитектура сервиса](diagrams/architecture_diagram.puml)\n")
+                    parts.append("\n")
+                    sections_content.append((title, "".join(parts)))
+            elif key == "imports":
+                c = menu_only("Импорты", "sections/imports.md")
+                if c:
+                    sections_content.append(("Импорты", c))
+            elif key == "structures":
+                c = menu_only("Структуры и типы", "sections/structures.md")
+                if c:
+                    sections_content.append(("Структуры и типы", c))
+            elif key == "functions":
+                c = menu_only("Функции", "sections/functions.md")
+                if c:
+                    sections_content.append(("Функции", c))
+            elif key == "api":
+                c = menu_only("Спецификация API", "sections/api.md")
+                if c:
+                    sections_content.append(("Спецификация API", c))
+            elif key == "tests":
+                c = menu_only("Тестирование", "sections/tests.md")
+                if c:
+                    sections_content.append(("Тестирование", c))
+            elif key == "libraries":
+                c = menu_only("Используемые библиотеки", "sections/libraries.md")
+                if c:
+                    sections_content.append(("Используемые библиотеки", c))
+            elif key == "others_user":
+                if user_dir.exists():
+                    md_files = [
+                        f
+                        for f in user_dir.iterdir()
+                        if f.is_file()
+                        and f.suffix == ".md"
+                        and f.name not in {"architecture.md", "db.md"}
+                    ]
+                    if md_files:
+                        parts = [f"## {title}\n\n"]
+                        for f in sorted(md_files, key=lambda x: x.name):
+                            fc = read_if_exists(f)
+                            if not fc:
+                                continue
+                            parts.append(fc)
+                            parts.append("\n")
+                        sections_content.append((title, "\n".join(parts)))
+
+        # Navigation
+        # Extract titles after we have sections_content
+        for sec_title, sec_content in sections_content:
+            section_titles.append((sec_title, self._extract_section_titles(sec_content)))
+
         if section_titles:
-            readme_content.append("## Navigation\n\n")
+            readme_parts.append("## Навигация\n\n")
             for section_name, titles in section_titles:
                 if not titles:
                     continue
-                # Main section link
                 main_anchor = self._create_anchor_link(section_name)
-                readme_content.append(f"- [{section_name}](#{main_anchor})\n")
-                
-                # Sub-sections (h2 only, to avoid too much nesting)
-                for level, title in titles:
-                    if level == 'h2':
-                        anchor = self._create_anchor_link(title)
-                        # Clean title (remove markdown links)
-                        clean_title = title
-                        # Extract text from markdown links
+                readme_parts.append(f"- [{section_name}](#{main_anchor})\n")
+                for level, t in titles:
+                    if level == "h2":
+                        # Avoid duplicate like "Импорты -> Импорты"
+                        if self._create_anchor_link(t) == main_anchor:
+                            continue
+                        if t.strip().lower() in {"меню", "menu"}:
+                            continue
+                        anchor = self._create_anchor_link(t)
                         import re
-                        link_match = re.search(r'\[([^\]]+)\]', title)
+                        clean_title = t
+                        link_match = re.search(r"\[([^\]]+)\]", t)
                         if link_match:
                             clean_title = link_match.group(1)
-                        readme_content.append(f"  - [{clean_title}](#{anchor})\n")
-            
-            readme_content.append("\n---\n\n")
-        
-        # Add Functions section with directory links (if exists)
-        functions_md_path = self.docs_dir / 'functions.md'
-        if functions_md_path.exists():
-            functions_content = functions_md_path.read_text(encoding='utf-8')
-            readme_content.append(functions_content)
-            readme_content.append("\n---\n\n")
-        
-        # Add other sections (skip Functions as we already added it)
-        for title, content in sections:
-            if title == 'Others' and not content:
-                continue
-            if title == 'Functions':
-                # Skip functions as we already added it above
-                continue
-            readme_content.append(content)
-            readme_content.append("\n---\n\n")
-        
-        # Write README.md to the Go service directory
-        readme_path = self.go_dir / output_file
-        readme_path.write_text('\n'.join(readme_content), encoding='utf-8')
+                        readme_parts.append(f"  - [{clean_title}](#{anchor})\n")
+            readme_parts.append("\n---\n\n")
+
+        # Append sections in order
+        for sec_title, sec_content in sections_content:
+            add_section(sec_title, sec_content)
+
+        readme_path = self.docs_dir / output_file
+        readme_path.write_text("".join(readme_parts), encoding="utf-8")

@@ -1,56 +1,56 @@
-# GitLab CI Integration Guide
+# Руководство по интеграции GitLab CI
 
-This guide explains how to set up the documentation generator to run as a GitLab CI job in a docs repository.
+Это руководство объясняет, как настроить генератор документации для работы как GitLab CI джоба в репозитории docs.
 
-## Overview
+## Обзор
 
-The service is designed to run as a GitLab CI job that:
-- Triggers from external repositories via webhooks
-- Generates documentation for each project
-- Stores documentation in project-specific directories
-- Supports corporate VPN pip configuration
+Сервис разработан для работы как GitLab CI джоба, которая:
+- Триггерится из внешних репозиториев через webhooks
+- Генерирует документацию для каждого проекта
+- Сохраняет документацию в проектно-специфичные директории
+- Поддерживает конфигурацию корпоративного VPN для pip
 
-## Repository Structure
+## Структура репозитория
 
 ```
 docs-repo/
-├── .gitlab-ci.yml          # CI configuration
-├── docs/                   # Generated documentation root
-│   ├── project1/          # Documentation for project1
+├── .gitlab-ci.yml          # CI конфигурация
+├── docs/                   # Корень сгенерированной документации
+│   ├── project1/          # Документация для project1
 │   │   ├── README.md
 │   │   └── docs/
-│   ├── project2/          # Documentation for project2
+│   ├── project2/          # Документация для project2
 │   │   ├── README.md
 │   │   └── docs/
-│   └── project_id/        # Each project has its own directory
-│       └── user/          # User-provided documentation
+│   └── <project_id>/       # Каждый проект имеет свою директорию
+│       └── user/          # Пользовательская документация
 │           ├── user_architecture.md
 │           └── user_db_structure.md
-└── doc_generator.py       # Documentation generator
+└── doc_generator.py       # Генератор документации
 ```
 
-## GitLab CI Configuration
+## Конфигурация GitLab CI
 
-### Basic Setup
+### Базовая настройка
 
-The `.gitlab-ci.yml` is already configured. You need to set up:
+`.gitlab-ci.yml` уже настроен. Вам нужно настроить:
 
-1. **CI/CD Variables** in GitLab Settings:
-   - `CI_PIP_INDEX_URL` - Corporate PyPI URL (e.g., `https://pypi.company.com/simple`)
-   - `CI_PIP_TRUSTED_HOST` - Corporate PyPI hostname (e.g., `pypi.company.com`)
+1. **CI/CD Переменные** в GitLab Settings:
+   - `CI_PIP_INDEX_URL` - URL корпоративного PyPI (например, `https://pypi.company.com/simple`)
+   - `CI_PIP_TRUSTED_HOST` - Хост корпоративного PyPI (например, `pypi.company.com`)
 
-2. **Project Variables** (optional):
-   - `PROJECT_REPO_URL` - External repository URL to clone
-   - `PROJECT_REF` - Branch/tag to checkout (default: main)
-   - `PROJECT_PATH` - Local path to project (if not cloning)
+2. **Переменные проекта** (опционально):
+   - `PROJECT_REPO_URL` - URL внешнего репозитория для клонирования
+   - `PROJECT_REF` - Ветка/тег для checkout (по умолчанию: main)
+   - `PROJECT_PATH` - Локальный путь к проекту (если не клонируется)
 
-### Manual Trigger
+### Ручной триггер
 
-Trigger the job manually:
+Запустите джобу вручную:
 
 ```bash
-# Via GitLab UI: CI/CD > Pipelines > Run Pipeline
-# Or via API:
+# Через GitLab UI: CI/CD > Pipelines > Run Pipeline
+# Или через API:
 curl -X POST \
   -F token=YOUR_TRIGGER_TOKEN \
   -F ref=main \
@@ -59,29 +59,29 @@ curl -X POST \
   https://gitlab.com/api/v4/projects/PROJECT_ID/trigger/pipeline
 ```
 
-### Webhook Trigger
+### Webhook триггер
 
-Set up webhook in external repository to trigger docs generation:
+Настройте webhook во внешнем репозитории для триггера генерации документации:
 
-1. Go to external project: Settings > Webhooks
-2. Add webhook URL: `https://gitlab.com/api/v4/projects/DOCS_PROJECT_ID/trigger/pipeline`
-3. Set trigger token
-4. Select events: Push events, Tag push events
+1. Перейдите во внешний проект: Settings > Webhooks
+2. Добавьте URL webhook: `https://gitlab.com/api/v4/projects/DOCS_PROJECT_ID/trigger/pipeline`
+3. Установите trigger token
+4. Выберите события: Push events, Tag push events
 
-## Corporate VPN Configuration
+## Конфигурация корпоративного VPN
 
-### Option 1: CI/CD Variables (Recommended)
+### Вариант 1: CI/CD Переменные (Рекомендуется)
 
-Set in GitLab: Settings > CI/CD > Variables
+Установите в GitLab: Settings > CI/CD > Variables
 
 ```
 CI_PIP_INDEX_URL = https://your-corporate-pypi.com/simple
 CI_PIP_TRUSTED_HOST = your-corporate-pypi.com
 ```
 
-### Option 2: pip.conf in Repository
+### Вариант 2: pip.conf в репозитории
 
-Create `pip.conf` in repository root:
+Создайте `pip.conf` в корне репозитория:
 
 ```ini
 [global]
@@ -89,11 +89,11 @@ index-url = https://your-corporate-pypi.com/simple
 trusted-host = your-corporate-pypi.com
 ```
 
-The CI job will automatically use it.
+CI джоба автоматически использует его.
 
-## User Documentation Structure
+## Структура пользовательской документации
 
-User-provided documentation should be stored in:
+Пользовательская документация должна храниться в:
 
 ```
 docs/
@@ -104,55 +104,55 @@ docs/
         └── other_custom.md
 ```
 
-Where `<project_id>` is derived from project path (e.g., `group_project` from `group/project`).
+Где `<project_id>` извлекается из пути проекта (например, `group_project` из `group/project`).
 
-## Project Identification
+## Идентификация проекта
 
-Projects are identified by their path:
+Проекты идентифицируются по их пути:
 - `group/project` → `group_project`
 - `namespace:project` → `namespace_project`
 
-This creates unique directories for each project's documentation.
+Это создает уникальные директории для документации каждого проекта.
 
-## Example Workflow
+## Пример workflow
 
-1. **External repository** pushes changes
-2. **Webhook** triggers GitLab CI job in docs repository
-3. **CI job**:
-   - Clones external repository
-   - Generates documentation
-   - Copies user docs from `docs/<project_id>/user/`
-   - Saves everything to `docs/<project_id>/`
-4. **Documentation** is committed and available in docs repository
+1. **Внешний репозиторий** делает push изменений
+2. **Webhook** триггерит GitLab CI джобу в репозитории docs
+3. **CI джоба**:
+   - Клонирует внешний репозиторий
+   - Генерирует документацию
+   - Копирует пользовательские документы из `docs/<project_id>/user/`
+   - Сохраняет все в `docs/<project_id>/`
+4. **Документация** коммитится и доступна в репозитории docs
 
-## Environment Variables
+## Переменные окружения
 
-### Required
-- `PROJECT_REPO_URL` or `PROJECT_PATH` - Source of Go service
+### Обязательные
+- `PROJECT_REPO_URL` или `PROJECT_PATH` - Источник Go сервиса
 
-### Optional
-- `PROJECT_REF` - Branch/tag to checkout (default: main)
-- `CI_PIP_INDEX_URL` - Corporate PyPI URL
-- `CI_PIP_TRUSTED_HOST` - Corporate PyPI hostname
-- `DOCS_ROOT` - Documentation root directory (default: docs)
+### Опциональные
+- `PROJECT_REF` - Ветка/тег для checkout (по умолчанию: main)
+- `CI_PIP_INDEX_URL` - URL корпоративного PyPI
+- `CI_PIP_TRUSTED_HOST` - Хост корпоративного PyPI
+- `DOCS_ROOT` - Корневая директория документации (по умолчанию: docs)
 
-## Troubleshooting
+## Устранение неполадок
 
-### pip Installation Fails
+### Установка pip не удается
 
-1. Check `CI_PIP_INDEX_URL` and `CI_PIP_TRUSTED_HOST` variables
-2. Verify VPN access from GitLab runners
-3. Check pip.conf if using file-based configuration
+1. Проверьте переменные `CI_PIP_INDEX_URL` и `CI_PIP_TRUSTED_HOST`
+2. Убедитесь в доступе к VPN с GitLab runners
+3. Проверьте pip.conf, если используете файловую конфигурацию
 
-### Documentation Not Generated
+### Документация не генерируется
 
-1. Verify project path is correct
-2. Check GitLab CI job logs
-3. Ensure Go service repository is accessible
-4. Verify user docs directory structure
+1. Проверьте, что путь проекта правильный
+2. Проверьте логи GitLab CI джобы
+3. Убедитесь, что репозиторий Go сервиса доступен
+4. Проверьте структуру директории пользовательских документов
 
-### User Docs Not Found
+### Пользовательские документы не найдены
 
-1. Check directory structure: `docs/<project_id>/user/`
-2. Verify project_id matches (use underscores, not slashes)
-3. Ensure files have correct names (`user_architecture.md`, etc.)
+1. Проверьте структуру директории: `docs/<project_id>/user/`
+2. Убедитесь, что project_id совпадает (используйте подчеркивания, не слэши)
+3. Убедитесь, что файлы имеют правильные имена (`user_architecture.md`, и т.д.)

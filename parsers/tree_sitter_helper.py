@@ -5,9 +5,15 @@ Provides utilities for parsing Go code using tree-sitter.
 """
 
 from pathlib import Path
-from typing import Optional, Dict, List
-import tree_sitter
-from tree_sitter import Language, Parser
+from typing import Optional, Dict, List, Any
+
+try:
+    import tree_sitter  # type: ignore
+    from tree_sitter import Language, Parser  # type: ignore
+except ImportError:  # pragma: no cover
+    tree_sitter = None  # type: ignore
+    Language = None  # type: ignore
+    Parser = None  # type: ignore
 
 
 class TreeSitterGoParser:
@@ -75,7 +81,7 @@ class TreeSitterGoParser:
             self.language = None
             self.parser = None
     
-    def parse_file(self, file_path: Path) -> Optional[tree_sitter.Tree]:
+    def parse_file(self, file_path: Path) -> Optional[Any]:
         """Parse a Go file and return the syntax tree."""
         if not self.parser:
             return None
@@ -88,18 +94,18 @@ class TreeSitterGoParser:
             print(f"Warning: Could not parse {file_path}: {e}")
             return None
     
-    def get_node_text(self, node: tree_sitter.Node, source: bytes) -> str:
+    def get_node_text(self, node: Any, source: bytes) -> str:
         """Extract text content from a node."""
         return source[node.start_byte:node.end_byte].decode('utf-8')
     
-    def find_nodes_by_type(self, tree: tree_sitter.Tree, node_type: str) -> List[tree_sitter.Node]:
+    def find_nodes_by_type(self, tree: Any, node_type: str) -> List[Any]:
         """Find all nodes of a specific type in the tree."""
         if not tree:
             return []
         
         nodes = []
         
-        def traverse(node: tree_sitter.Node):
+        def traverse(node: Any):
             if node.type == node_type:
                 nodes.append(node)
             for child in node.children:
@@ -108,7 +114,7 @@ class TreeSitterGoParser:
         traverse(tree.root_node)
         return nodes
     
-    def get_comment_before_node(self, node: tree_sitter.Node, source: bytes) -> str:
+    def get_comment_before_node(self, node: Any, source: bytes) -> str:
         """Extract comment group immediately before a node."""
         comments = []
         
@@ -136,7 +142,7 @@ class TreeSitterGoParser:
         
         return '\n'.join(comments)
     
-    def extract_function_signature(self, func_node: tree_sitter.Node, source: bytes) -> Dict:
+    def extract_function_signature(self, func_node: Any, source: bytes) -> Dict:
         """Extract function signature information from a function node."""
         result = {
             'name': '',
@@ -182,7 +188,7 @@ class TreeSitterGoParser:
         
         return result
     
-    def extract_struct_fields(self, struct_node: tree_sitter.Node, source: bytes) -> List[Dict]:
+    def extract_struct_fields(self, struct_node: Any, source: bytes) -> List[Dict]:
         """Extract field definitions from a struct type."""
         fields = []
         
@@ -203,7 +209,7 @@ class TreeSitterGoParser:
         
         return fields
     
-    def _parse_field_declaration(self, field_node: tree_sitter.Node, source: bytes) -> Optional[Dict]:
+    def _parse_field_declaration(self, field_node: Any, source: bytes) -> Optional[Dict]:
         """Parse a single field declaration."""
         field = {
             'name': '',

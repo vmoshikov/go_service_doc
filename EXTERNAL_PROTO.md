@@ -1,14 +1,20 @@
-# External Proto Repository Configuration
+# Конфигурация внешних Proto репозиториев
 
-This guide explains how to configure links to external protobuf repositories.
+Это руководство объясняет, как настроить ссылки на внешние protobuf репозитории.
 
-## Overview
+## Обзор
 
-When your Go service uses protobuf definitions from other repositories or directories, you can configure the documentation generator to create links to those external proto definitions.
+Когда ваш Go сервис использует определения protobuf из других репозиториев или директорий, вы можете настроить генератор документации для создания ссылок на эти внешние proto определения.
 
-## Configuration File
+## Файл конфигурации
 
-Create a `.doc_config.json` file in your Go service root directory:
+Создайте файл конфигурации в директории документации (настройка генератора):
+
+- `docs/<repo_name>/proto_conf.json`
+
+Так конфигурация хранится рядом со сгенерированной документацией и работает, даже если генератор клонирует Go‑репозиторий во временную директорию.
+
+Поддерживается legacy‑вариант: `.doc_config.json` в корне Go‑сервиса, но **рекомендуется** `docs/<repo_name>/proto_conf.json`.
 
 ```json
 {
@@ -17,13 +23,13 @@ Create a `.doc_config.json` file in your Go service root directory:
       "url": "https://github.com/your-org/proto-definitions",
       "path": "proto",
       "branch": "main",
-      "description": "Shared protobuf definitions"
+      "description": "Общие определения protobuf"
     },
     "common-proto": {
       "url": "https://gitlab.com/your-org/common-proto",
       "path": "definitions",
       "branch": "master",
-      "description": "Common proto definitions"
+      "description": "Общие proto определения"
     }
   },
   "proto_mappings": {
@@ -34,27 +40,27 @@ Create a `.doc_config.json` file in your Go service root directory:
 }
 ```
 
-## Configuration Fields
+## Поля конфигурации
 
 ### external_repositories
 
-Defines external repositories that contain proto definitions:
+Определяет внешние репозитории, содержащие proto определения:
 
-- **url**: Repository URL (GitHub, GitLab, or any Git hosting)
-- **path**: Path within the repository where proto files are located
-- **branch**: Branch name (default: "main" or "master")
-- **description**: Human-readable description
+- **url**: URL репозитория (GitHub, GitLab или любой Git хостинг)
+- **path**: Путь внутри репозитория, где находятся proto файлы
+- **branch**: Имя ветки (по умолчанию: "main" или "master")
+- **description**: Человекочитаемое описание
 
 ### proto_mappings
 
-Maps proto package names to repository names:
+Сопоставляет имена proto пакетов с именами репозиториев:
 
-- Key: Proto package name or prefix (e.g., `pbExample`, `com.example`)
-- Value: Repository name from `external_repositories`
+- Ключ: Имя proto пакета или префикс (например, `pbExample`, `com.example`)
+- Значение: Имя репозитория из `external_repositories`
 
-## Examples
+## Примеры
 
-### Example 1: Single Proto Repository
+### Пример 1: Один Proto репозиторий
 
 ```json
 {
@@ -63,7 +69,7 @@ Maps proto package names to repository names:
       "url": "https://github.com/mycompany/shared-proto",
       "path": "proto",
       "branch": "main",
-      "description": "Shared protobuf definitions"
+      "description": "Общие определения protobuf"
     }
   },
   "proto_mappings": {
@@ -73,7 +79,7 @@ Maps proto package names to repository names:
 }
 ```
 
-### Example 2: Multiple Proto Repositories
+### Пример 2: Несколько Proto репозиториев
 
 ```json
 {
@@ -82,13 +88,13 @@ Maps proto package names to repository names:
       "url": "https://github.com/mycompany/user-service",
       "path": "api/proto",
       "branch": "main",
-      "description": "User service proto definitions"
+      "description": "Proto определения сервиса пользователей"
     },
     "order-proto": {
       "url": "https://github.com/mycompany/order-service",
       "path": "proto",
       "branch": "main",
-      "description": "Order service proto definitions"
+      "description": "Proto определения сервиса заказов"
     }
   },
   "proto_mappings": {
@@ -98,9 +104,9 @@ Maps proto package names to repository names:
 }
 ```
 
-### Example 3: Local Directory
+### Пример 3: Локальная директория
 
-If proto files are in a local directory (not a git repo):
+Если proto файлы находятся в локальной директории (не в git репозитории):
 
 ```json
 {
@@ -109,7 +115,7 @@ If proto files are in a local directory (not a git repo):
       "url": "file:///path/to/proto-definitions",
       "path": "",
       "branch": "",
-      "description": "Local proto definitions"
+      "description": "Локальные proto определения"
     }
   },
   "proto_mappings": {
@@ -118,67 +124,67 @@ If proto files are in a local directory (not a git repo):
 }
 ```
 
-## How It Works
+## Как это работает
 
-1. **Package Detection**: The generator detects proto package names in your Go code (e.g., `pbExample.ListUsersRequest`)
+1. **Обнаружение пакета**: Генератор обнаруживает имена proto пакетов в вашем Go коде (например, `pbExample.ListUsersRequest`)
 
-2. **Mapping Lookup**: It looks up the package name in `proto_mappings` to find the repository
+2. **Поиск сопоставления**: Он ищет имя пакета в `proto_mappings`, чтобы найти репозиторий
 
-3. **Link Generation**: Creates a link to the proto file in the external repository
+3. **Генерация ссылки**: Создает ссылку на proto файл во внешнем репозитории
 
-4. **Documentation**: Adds the link to the API documentation
+4. **Документация**: Добавляет ссылку в документацию API
 
-## Generated Documentation
+## Генерируемая документация
 
-When configured, the API documentation will include:
+При настройке документация API будет включать:
 
 ```markdown
 ### ListUsers
 
-ListUsers is a gRPC method that accepts pbExample.ListUsersRequest and returns pbExample.ListUsersResponse.
+ListUsers - это gRPC метод, который принимает pbExample.ListUsersRequest и возвращает pbExample.ListUsersResponse.
 
-**Request Type:** `pbExample.ListUsersRequest` - [View Proto Definition](https://github.com/your-org/proto-definitions/blob/main/proto/example.proto)
+**Request Type:** `pbExample.ListUsersRequest` - [Просмотр Proto определения](https://github.com/your-org/proto-definitions/blob/main/proto/example.proto)
 
-**Response Type:** `pbExample.ListUsersResponse` - [View Proto Definition](https://github.com/your-org/proto-definitions/blob/main/proto/example.proto)
+**Response Type:** `pbExample.ListUsersResponse` - [Просмотр Proto определения](https://github.com/your-org/proto-definitions/blob/main/proto/example.proto)
 
-*Proto definitions from: Shared protobuf definitions*
+*Proto определения из: Общие определения protobuf*
 ```
 
-## Creating Configuration File
+## Создание файла конфигурации
 
-You can create an example configuration file:
+Вы можете создать пример файла конфигурации:
 
 ```bash
-python -c "from config import Config; Config.create_example_config(Path('.'))"
+python -c "from pathlib import Path; from config import Config; Config.create_example_config(Path('docs/<repo_name>/proto_conf.json'))"
 ```
 
-Or manually create `.doc_config.json` in your Go service root.
+Или вручную создайте `docs/<repo_name>/proto_conf.json`.
 
-## Supported Repository Hosts
+## Поддерживаемые хостинги репозиториев
 
 - **GitHub**: `https://github.com/owner/repo`
 - **GitLab**: `https://gitlab.com/owner/repo`
 - **Bitbucket**: `https://bitbucket.org/owner/repo`
-- **Generic Git**: Any Git hosting URL
-- **Local**: `file:///path/to/directory`
+- **Generic Git**: Любой URL Git хостинга
+- **Локальный**: `file:///path/to/directory`
 
-## Troubleshooting
+## Устранение неполадок
 
-### Links Not Appearing
+### Ссылки не появляются
 
-1. Check that `.doc_config.json` exists in your Go service root
-2. Verify package names in `proto_mappings` match your Go imports
-3. Ensure repository URLs are correct and accessible
+1. Проверьте, что `docs/<repo_name>/proto_conf.json` существует
+2. Убедитесь, что имена пакетов в `proto_mappings` соответствуют вашим Go импортам
+3. Убедитесь, что URL репозиториев правильные и доступны
 
-### Wrong Links
+### Неправильные ссылки
 
-1. Check the `path` field matches the actual proto file location
-2. Verify the `branch` name is correct
-3. Ensure package name mapping is correct
+1. Проверьте, что поле `path` соответствует фактическому расположению proto файлов
+2. Убедитесь, что имя ветки `branch` правильное
+3. Убедитесь, что сопоставление имен пакетов корректно
 
-### Multiple Packages from Same Repo
+### Несколько пакетов из одного репозитория
 
-You can map multiple package prefixes to the same repository:
+Вы можете сопоставить несколько префиксов пакетов с одним репозиторием:
 
 ```json
 {
