@@ -1,101 +1,188 @@
 stages:
-  - generate-docs
+  - generate
+  - commit
 
 variables:
-  PIP_INDEX_URL: "${CI_PIP_INDEX_URL:-https://pypi.org/simple}"
-  PIP_TRUSTED_HOST: "${CI_PIP_TRUSTED_HOST:-pypi.org}"
+  # Корень, куда складываем результаты в docs-репозитории
   DOCS_ROOT: "docs"
-  PYTHON_VERSION: "3.11"
+  PYTHON_IMAGE: "python:3.11-slim"
+
+  # Корпоративный pip (задайте в CI/CD variables)
+  # CI_PIP_INDEX_URL, CI_PIP_TRUSTED_HOST
+  PIP_INDEX_URL: "${CI_PIP_INDEX_URL}"
+  PIP_TRUSTED_HOST: "${CI_PIP_TRUSTED_HOST}"
+
+  # Внешний репозиторий (задаётся при ручном запуске/триггере)
+  PROJECT_REPO_URL: ""
+  PROJECT_REF: ""
+  PROJECT_ID: ""
+
+  # Коммитить ли результаты обратно в docs-репозиторий
+  PUSH_DOCS: "false"
+
+.setup_python: &setup_python
+  - apt-get update && apt-get install -y --no-install-recommends build-essential git ca-certificates && rm -rf /var/lib/apt/lists/*
+  - python -m pip install --no-cache-dir --upgrade pip
+  - |
+    # Настройка pip под корпоративный VPN
+    if [ -n "$PIP_INDEX_URL" ]; then
+      pip config set global.index-url "$PIP_INDEX_URL"
+    fi
+    if [ -n "$PIP_TRUSTED_HOST" ]; then
+      pip config set global.trusted-host "$PIP_TRUSTED_HOST"
+    fi
+  - pip install --no-cache-dir -r requirements.txt
 
 generate-documentation:
-  stage: generate-docs
-  image: python:${PYTHON_VERSION}-slim
+  stage: generate
+  image: ${PYTHON_IMAGE}
   rules:
-    # Manual запуск из UI "Run pipeline"
+    # Ручной запуск из UI "Run pipeline"
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: on_success
     # Запуск через trigger token / API trigger
     - if: '$CI_PIPELINE_SOURCE == "trigger"'
       when: on_success
-    # Опционально: запуск по пушу в docs-репо (main/master)
+    # (опционально) запуск по push в docs-репо на main/master
     - if: '$CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master")'
       when: on_success
     - when: never
   before_script:
-    # Install system dependencies
-    - apt-get update && apt-get install -y build-essential git vim less && rm -rf /var/lib/apt/lists/*
-    
-    # Configure pip for corporate VPN
-    - |
-      pip install --no-cache-dir --upgrade pip
-      if [ -n "$PIP_INDEX_URL" ]; then
-        pip config set global.index-url "${PIP_INDEX_URL}"
-      fi
-      if [ -n "$PIP_TRUSTED_HOST" ]; then
-        pip config set global.trusted-host "${PIP_TRUSTED_HOST}"
-      fi
-    
-    # Install Python dependencies
-    - pip install --no-cache-dir -r requirements.txt
-    
-    # Create docs directory structure
-    - mkdir -p ${DOCS_ROOT}
-  
+    - *setup_python
+    - mkdir -p "${DOCS_ROOT}"
   script:
-    # Determine project identifier from various sources
     - |
-      if [ -n "$PROJECT_REPO_URL" ]; then
-        # Extract project ID from repository URL
-        # Format: https://gitlab.com/group/project.git -> group_project
-        PROJECT_ID=$(echo "$PROJECT_REPO_URL" | sed 's|.*://[^/]*/||' | sed 's|\.git$||' | tr '/' '_' | tr ':' '_')
-      elif [ -n "$PROJECT_PATH" ]; then
-        PROJECT_ID=$(echo "$PROJECT_PATH" | tr '/' '_' | tr ':' '_')
-      elif [ -n "$CI_PROJECT_PATH" ]; then
-        PROJECT_ID=$(echo "$CI_PROJECT_PATH" | tr '/' '_' | tr ':' '_')
-      else
-        echo "Error: PROJECT_REPO_URL, PROJECT_PATH, or CI_PROJECT_PATH must be set"
-        exit 1
+      # Валидация для ручного запуска/триггера
+      if [ "$CI_PIPELINE_SOURCE" = "web" ] || [ "$CI_PIPELINE_SOURCE" = "trigger" ]; then
+        if [ -z "$PROJECT_REPO_URL" ]; then
+          echo "ERROR: Укажите переменную PROJECT_REPO_URL (например: https://gitlab.example.com/group/project.git)"
+          exit 1
+        fi
       fi
-    
-    # Create project-specific directory
-    - PROJECT_DOCS_DIR="${DOCS_ROOT}/${PROJECT_ID}"
-    - mkdir -p "${PROJECT_DOCS_DIR}"
-    
-    # Clone or use provided project path
+
     - |
+      # Определяем PROJECT_ID
+      if [ -n "$PROJECT_ID" ]; then
+        echo "Using PROJECT_ID=$PROJECT_ID (provided)"
+      elif [ -n "$PROJECT_REPO_URL" ]; then
+        # https://host/group/project(.git) -> group_project
+        PROJECT_ID=$(python - <<'PY'
+import os, re
+u=os.environ.get("PROJECT_REPO_URL","").strip()
+u=re.sub(r"^.*://[^/]+/","",u)
+u=re.sub(r"\.git$","",u)
+u=u.replace("/","_").replace(":","_")
+print(u)
+PY
+)
+      else
+        # На push в docs-репо может не быть внешнего URL — используйте CI_PROJECT_PATH как fallback
+        PROJECT_ID=$(echo "${CI_PROJECT_PATH}" | tr '/' '_' | tr ':' '_')
+      fi
+      export PROJECT_ID
+      echo "PROJECT_ID=$PROJECT_ID"
+
+    - |
+      PROJECT_DOCS_DIR="${DOCS_ROOT}/${PROJECT_ID}"
+      export PROJECT_DOCS_DIR
+      mkdir -p "${PROJECT_DOCS_DIR}/docs" "${PROJECT_DOCS_DIR}/functions" "${PROJECT_DOCS_DIR}/user"
+
+    - |
+      # Клонируем внешний репозиторий (если указан)
       if [ -n "$PROJECT_REPO_URL" ]; then
-        # Clone external repository
         CLONE_DIR="/tmp/${PROJECT_ID}"
-        git clone "$PROJECT_REPO_URL" "$CLONE_DIR"
+        rm -rf "$CLONE_DIR"
+        git clone --depth 1 "$PROJECT_REPO_URL" "$CLONE_DIR"
         if [ -n "$PROJECT_REF" ]; then
-          cd "$CLONE_DIR"
-          git checkout "$PROJECT_REF"
+          (cd "$CLONE_DIR" && git fetch --depth 1 origin "$PROJECT_REF" && git checkout "$PROJECT_REF") || (cd "$CLONE_DIR" && git checkout "$PROJECT_REF")
         fi
         PROJECT_SOURCE="$CLONE_DIR"
-      elif [ -n "$PROJECT_PATH" ]; then
-        PROJECT_SOURCE="$PROJECT_PATH"
       else
         PROJECT_SOURCE="."
       fi
-    
-    # Set environment variable for project ID (used by doc_generator.py)
-    - export PROJECT_ID="${PROJECT_ID}"
-    
-    # Generate documentation
-    # User docs will be automatically loaded from docs/<project_id>/user/ if they exist
+      export PROJECT_SOURCE
+      echo "PROJECT_SOURCE=$PROJECT_SOURCE"
+
     - |
+      # Генерируем документацию.
+      # doc_generator.py сам подтянет пользовательские файлы из docs/<project_id>/user/ (в docs-репо), если они есть.
       python doc_generator.py "${PROJECT_SOURCE}" --output README.md
-    
-    # Move generated docs to project directory in docs repo
+
     - |
+      # Копируем секционные markdown'ы из <project>/docs/ -> docs/<project_id>/docs/
       if [ -d "${PROJECT_SOURCE}/docs" ]; then
-        cp -r "${PROJECT_SOURCE}/docs"/* "${PROJECT_DOCS_DIR}/" || true
+        cp -r "${PROJECT_SOURCE}/docs"/. "${PROJECT_DOCS_DIR}/docs/" || true
       fi
+
+      # Копируем корневой README.md проекта
       if [ -f "${PROJECT_SOURCE}/README.md" ]; then
         cp "${PROJECT_SOURCE}/README.md" "${PROJECT_DOCS_DIR}/README.md"
       fi
-  
+
+    - |
+      # Собираем "дочерние" README.md по директориям (которые генератор создаёт в clone),
+      # и складываем их в docs/<project_id>/functions/<path>/README.md
+      python - <<'PY'
+import os
+from pathlib import Path
+
+src = Path(os.environ["PROJECT_SOURCE"])
+dst = Path(os.environ["PROJECT_DOCS_DIR"]) / "functions"
+
+def should_skip(p: Path) -> bool:
+  parts = set(p.parts)
+  return (
+    ".git" in parts or
+    "vendor" in parts or
+    "docs" in parts
+  )
+
+for readme in src.rglob("README.md"):
+  if readme == src / "README.md":
+    continue
+  if should_skip(readme):
+    continue
+  rel_dir = readme.parent.relative_to(src)
+  out_dir = dst / rel_dir
+  out_dir.mkdir(parents=True, exist_ok=True)
+  (out_dir / "README.md").write_text(readme.read_text(encoding="utf-8"), encoding="utf-8")
+PY
+
+    - |
+      echo "Generated docs at: ${PROJECT_DOCS_DIR}"
+      ls -la "${PROJECT_DOCS_DIR}" || true
+
   artifacts:
     paths:
       - ${DOCS_ROOT}/
-    expire_in: 1 week
+    expire_in: 2 weeks
+
+commit-documentation:
+  stage: commit
+  image: ${PYTHON_IMAGE}
+  needs: ["generate-documentation"]
+  rules:
+    - if: '$PUSH_DOCS == "true" && ($CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "trigger")'
+      when: on_success
+    - when: never
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+  script:
+    - |
+      # Коммитим только то, что сгенерировали (docs/<project_id>/...)
+      if [ -z "$PROJECT_ID" ]; then
+        echo "ERROR: PROJECT_ID is empty; cannot commit"
+        exit 1
+      fi
+      git status
+      git config user.name "${GITLAB_USER_NAME:-gitlab-ci}"
+      git config user.email "${GITLAB_USER_EMAIL:-gitlab-ci@localhost}"
+      git add "${DOCS_ROOT}/${PROJECT_ID}"
+      if git diff --cached --quiet; then
+        echo "No changes to commit."
+        exit 0
+      fi
+      git commit -m "chore(docs): update ${PROJECT_ID} [skip ci]"
+      # Пушим в текущий репозиторий (docs). CI_JOB_TOKEN должен иметь права на push в этот проект.
+      git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+      git push origin "HEAD:${CI_COMMIT_REF_NAME}"
