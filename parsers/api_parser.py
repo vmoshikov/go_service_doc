@@ -11,16 +11,18 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from parsers.tree_sitter_helper import TreeSitterGoParser
+from parsers.proto_struct_extractor import ProtoStructExtractor
 from config import Config
 
 
 class APIParser:
-    def __init__(self, go_dir: Path, config_path: Optional[Path] = None):
+    def __init__(self, go_dir: Path, config_path: Optional[Path] = None, repo_name: Optional[str] = None, cache_dir: Optional[Path] = None):
         self.go_dir = go_dir
         self.structs = {}
         self.ts_parser = TreeSitterGoParser()
         self.use_tree_sitter = self.ts_parser.is_available()
-        self.config = Config(go_dir, config_path=config_path)
+        self.config = Config(go_dir, config_path=config_path, repo_name=repo_name)
+        self.proto_extractor = ProtoStructExtractor(self.config, cache_dir=cache_dir) if repo_name else None
     
     def parse(self) -> Dict:
         """Parse all API endpoints from the codebase."""
@@ -55,6 +57,16 @@ class APIParser:
                 self._parse_structs_tree_sitter(go_file)
             else:
                 self._parse_structs_regex(go_file)
+        
+        # Enrich with structs from proto repository
+        if self.proto_extractor:
+            proto_structs = self.proto_extractor.get_structs_for_project()
+            # Merge proto structs into local structs (proto takes precedence for conflicts)
+            for struct_name, struct_def in proto_structs.items():
+                if struct_name not in self.structs:
+                    # Mark as from proto repository
+                    struct_def['from_proto'] = True
+                    self.structs[struct_name] = struct_def
     
     def _parse_structs_tree_sitter(self, go_file: Path):
         """Parse structs using tree-sitter."""
@@ -245,6 +257,16 @@ class APIParser:
                     # Get request/response structures
                     request_struct = self._get_struct_json(request_type)
                     response_struct = self._get_struct_json(response_type)
+                    
+                    # Try to get from proto repository if not found locally
+                    if not request_struct and self.proto_extractor:
+                        proto_struct = self.proto_extractor.get_struct(request_type)
+                        if proto_struct:
+                            request_struct = self._struct_to_json(proto_struct)
+                    if not response_struct and self.proto_extractor:
+                        proto_struct = self.proto_extractor.get_struct(response_type)
+                        if proto_struct:
+                            response_struct = self._struct_to_json(proto_struct)
                     
                     # Check for external proto repository
                     proto_link = None

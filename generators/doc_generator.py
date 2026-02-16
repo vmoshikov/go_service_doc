@@ -170,9 +170,31 @@ class DocumentationGenerator:
                 encoding="utf-8",
             )
 
+    def _sections_nav(self, current_depth: int = 1) -> List[str]:
+        """
+        Navigation block for section files.
+        current_depth:
+          - 1 for docs/<repo>/sections/*.md (../README.md)
+          - 2 for docs/<repo>/sections/functions/*.md (../../README.md)
+        """
+        prefix = "../" * current_depth
+        lines: List[str] = []
+        lines.append("## Навигация\n\n")
+        lines.append(f"- [К оглавлению документации]({prefix}README.md)\n")
+        lines.append(f"- [Диаграммы]({prefix}diagrams/)\n")
+        lines.append("- [Импорты](imports.md)\n")
+        lines.append("- [Структуры и типы](structures.md)\n")
+        lines.append("- [Функции](functions.md)\n")
+        lines.append("- [Спецификация API](api.md)\n")
+        lines.append("- [Тестирование](tests.md)\n")
+        lines.append("- [Используемые библиотеки](libraries.md)\n")
+        lines.append("\n---\n\n")
+        return lines
+
     def _generate_imports(self, imports: Dict):
         """Generate imports.md (imports overview)."""
-        content = ["# Импорты\n"]
+        content = ["# Импорты\n\n"]
+        content.extend(self._sections_nav(current_depth=1))
 
         module = imports.get("module") if isinstance(imports, dict) else None
         if module:
@@ -318,11 +340,14 @@ class DocumentationGenerator:
                                 content.append(definition)
                                 content.append("\n```\n\n")
 
+        content.append("\n---\n\n")
+        content.extend(self._sections_nav(current_depth=1))
         (self.sections_dir / "imports.md").write_text("\n".join(content), encoding="utf-8")
 
     def _generate_structures(self, structs: Dict):
         """Generate structures.md (all types/structs)."""
-        content = ["# Структуры и типы\n"]
+        content = ["# Структуры и типы\n\n"]
+        content.extend(self._sections_nav(current_depth=1))
 
         if not structs:
             content.append("Структуры/типы не найдены.\n")
@@ -378,6 +403,8 @@ class DocumentationGenerator:
 
             content.append("\n")
 
+        content.append("\n---\n\n")
+        content.extend(self._sections_nav(current_depth=1))
         (self.sections_dir / "structures.md").write_text("\n".join(content), encoding="utf-8")
     
     def _get_struct_json_for_type(self, type_name: str) -> Optional[Dict]:
@@ -448,12 +475,10 @@ class DocumentationGenerator:
         return {}
     
     def _generate_functions(self, functions: List[Dict], api_spec: Dict):
-        """Generate functions.md (single file with menu + details)."""
+        """Generate functions index + per-top-level-directory files."""
         if not functions:
-            # Still create empty functions.md
             content = ["# Функции\n\nФункции не найдены.\n"]
-            output_path = self.sections_dir / 'functions.md'
-            output_path.write_text('\n'.join(content), encoding='utf-8')
+            (self.sections_dir / "functions.md").write_text("\n".join(content), encoding="utf-8")
             return
 
         # Group by first-level directory (top-level)
@@ -463,52 +488,96 @@ class DocumentationGenerator:
             top = fp.split("/", 1)[0] if "/" in fp else "."
             grouped.setdefault(top, []).append(func)
 
-        content: List[str] = ["# Функции\n"]
-        content.append("## Меню\n\n")
+        functions_dir = self.sections_dir / "functions"
+        functions_dir.mkdir(parents=True, exist_ok=True)
+
+        def safe_name(s: str) -> str:
+            import re
+            s = s.strip().replace("/", "_").replace("\\", "_")
+            s = re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
+            return s or "root"
 
         def func_heading(file_path: str, line: Optional[int], name: str) -> str:
-            """
-            We avoid raw HTML anchors (<a id=...>) because users see them in the file.
-            Instead, make the heading text unique so the generated anchor is unique too.
-            """
+            # Unique heading text to make anchors stable (no raw HTML anchors)
             ln = line or 0
             return f"{name} ({file_path}:{ln})"
 
-        # Build full menu: dir -> file -> functions
+        # Prepare per-top-level directory pages
+        dir_items: List[Dict[str, object]] = []
         for top in sorted(grouped.keys()):
             title = "root" if top == "." else top
-            content.append(f"- 📁 [{title}](#{self._create_anchor_link(title)})\n")
+            file_name = f"{safe_name(title)}.md"
+            rel_path = f"sections/functions/{file_name}"
+            dir_items.append(
+                {
+                    "key": top,
+                    "dir": title,
+                    "file_name": file_name,
+                    "rel_path": rel_path,
+                    "functions": grouped[top],
+                }
+            )
 
+        def nav_block(prev_rel: Optional[str], next_rel: Optional[str]) -> List[str]:
+            lines: List[str] = []
+            lines.append("## Навигация\n\n")
+            lines.append("- [К оглавлению документации](../../README.md)\n")
+            lines.append("- [К индексу функций](../functions.md)\n")
+            lines.append("- [К разделам](../)\n")
+            if prev_rel:
+                lines.append(f"- [Предыдущая директория]({prev_rel})\n")
+            if next_rel:
+                lines.append(f"- [Следующая директория]({next_rel})\n")
+            lines.append("\n---\n\n")
+            return lines
+
+        # 1) Write per-top-level directory files with cross-links
+        for i, item in enumerate(dir_items):
+            title = item["dir"]  # type: ignore[assignment]
+            file_name = item["file_name"]  # type: ignore[assignment]
+            out_path = functions_dir / str(file_name)
+
+            prev_rel = dir_items[i - 1]["file_name"] if i > 0 else None
+            next_rel = dir_items[i + 1]["file_name"] if i + 1 < len(dir_items) else None
+
+            page: List[str] = [f"# Функции: {title}\n\n"]
+            page.extend(nav_block(str(prev_rel) if prev_rel else None, str(next_rel) if next_rel else None))
+            
             # Group by file within this top-level directory
             by_file: Dict[str, List[Dict]] = {}
-            for f in grouped[top]:
+            for f in item["functions"]:  # type: ignore[index]
                 by_file.setdefault(f["file"], []).append(f)
 
+            # Menu: files in header
+            page.append("## Меню по файлам\n\n")
             for file_path in sorted(by_file.keys()):
-                content.append(f"  - 📄 [{file_path}](#{self._create_anchor_link(file_path)})\n")
+                anchor = self._create_anchor_link(file_path)
+                page.append(f"- 📄 [{file_path}](#{anchor})\n")
+            page.append("\n---\n\n")
+
+            # Content: files with expandable function lists
+            for file_path in sorted(by_file.keys()):
+                anchor = self._create_anchor_link(file_path)
+                page.append(f"## {file_path}\n\n")
+                page.append(f"📄 Исходный файл: {self._create_file_link(file_path)}\n\n")
+                
+                # Expandable list of functions
+                page.append(f"<details open>\n<summary><b>Функции в этом файле ({len(by_file[file_path])})</b></summary>\n\n")
                 for func in sorted(by_file[file_path], key=lambda x: (x.get("name", ""), x.get("line", 0))):
                     heading = func_heading(file_path, func.get("line"), func.get("name", ""))
-                    label = func.get("name", "")
-                    content.append(f"    - 🔗 [{label}](#{self._create_anchor_link(heading)})\n")
+                    heading_anchor = self._create_anchor_link(heading)
+                    func_name = func.get('name', '')
+                    line = func.get('line')
+                    if line:
+                        page.append(f"- 🔗 [{func_name}](#{heading_anchor}) `:{line}`\n")
+                    else:
+                        page.append(f"- 🔗 [{func_name}](#{heading_anchor})\n")
+                page.append("\n</details>\n\n")
 
-        content.append("\n---\n\n")
-
-        for top in sorted(grouped.keys()):
-            title = "root" if top == "." else top
-            content.append(f"## {title}\n\n")
-
-            # Group by file within this top-level directory
-            by_file: Dict[str, List[Dict]] = {}
-            for f in grouped[top]:
-                by_file.setdefault(f["file"], []).append(f)
-
-            for file_path in sorted(by_file.keys()):
-                content.append(f"### {file_path}\n\n")
-                content.append(f"- 📄 Исходный файл: {self._create_file_link(file_path)}\n\n")
-
+                # Function details
                 for func in sorted(by_file[file_path], key=lambda x: (x.get("name", ""), x.get("line", 0))):
                     heading = func_heading(file_path, func.get("line"), func.get("name", ""))
-                    content.append(f"#### {heading}\n\n")
+                    page.append(f"### {heading}\n\n")
 
                     description = func.get("comment", "").strip()
                     if not description:
@@ -520,7 +589,7 @@ class DocumentationGenerator:
                             file_path=func.get("file"),
                         )
                     if description:
-                        content.append(f"{description}\n\n")
+                        page.append(f"{description}\n\n")
 
                     sig_parts = []
                     if func.get("receiver"):
@@ -531,30 +600,50 @@ class DocumentationGenerator:
                     if func.get("returns"):
                         sig_parts.append(func["returns"])
 
-                    content.append(f"```go\n{' '.join(sig_parts)}\n```\n\n")
+                    page.append(f"```go\n{' '.join(sig_parts)}\n```\n\n")
 
                     struct_types = func.get("struct_types", {}) or {}
                     if struct_types.get("request") or struct_types.get("response"):
                         for struct_type in struct_types.get("request", []):
                             struct_json = self._get_struct_json_for_type(struct_type)
                             if struct_json:
-                                content.append(f"**🧾 Тип запроса: `{struct_type}`**\n\n")
-                                content.append("```json")
-                                content.append(json.dumps(struct_json, indent=2, ensure_ascii=False))
-                                content.append("```\n\n")
+                                page.append(f"**Тип запроса:** {struct_type}\n\n")
+                                page.append("```json")
+                                page.append(json.dumps(struct_json, indent=2, ensure_ascii=False))
+                                page.append("```\n\n")
                         for struct_type in struct_types.get("response", []):
                             struct_json = self._get_struct_json_for_type(struct_type)
                             if struct_json:
-                                content.append(f"**🧾 Тип ответа: `{struct_type}`**\n\n")
-                                content.append("```json")
-                                content.append(json.dumps(struct_json, indent=2, ensure_ascii=False))
-                                content.append("```\n\n")
+                                page.append(f"**Тип ответа:** {struct_type}\n\n")
+                                page.append("```json")
+                                page.append(json.dumps(struct_json, indent=2, ensure_ascii=False))
+                                page.append("```\n\n")
 
-                    content.append(f"📍 *Расположение:* {self._create_file_link(file_path, func.get('line'))}\n\n")
+                    page.append(f"📍 *Расположение:* {self._create_file_link(file_path, func.get('line'))}\n\n")
 
-                content.append("\n")
+                page.append("\n")
 
-        (self.sections_dir / "functions.md").write_text("\n".join(content), encoding="utf-8")
+            # Footer navigation
+            page.append("\n---\n\n")
+            page.extend(nav_block(str(prev_rel) if prev_rel else None, str(next_rel) if next_rel else None))
+            out_path.write_text("\n".join(page), encoding="utf-8")
+
+        # 2) Write index file (sections/functions.md)
+        index: List[str] = ["# Функции\n\n"]
+        index.extend(self._sections_nav(current_depth=1))
+        index.append("## Директории верхнего уровня\n\n")
+        index.append("- [К оглавлению документации](../README.md)\n\n")
+        for item in dir_items:
+            index.append(f"- 📁 [{item['dir']}]({item['rel_path']})\n")
+        index.append("\n---\n\n")
+        # Add H2 entries so main README can build a menu from this file if needed
+        for item in dir_items:
+            index.append(f"## {item['dir']}\n\n")
+            index.append(f"- 📄 Подробнее: [{item['rel_path']}]({item['rel_path']})\n\n")
+        index.append("\n---\n\n")
+        index.extend(self._sections_nav(current_depth=1))
+
+        (self.sections_dir / "functions.md").write_text("\n".join(index), encoding="utf-8")
     
     def _generate_directory_readme(self, dir_key: str, functions: List[Dict]) -> Dict:
         """Generate README.md for a specific directory."""
@@ -751,139 +840,295 @@ class DocumentationGenerator:
     
     def _generate_api_spec(self, api_spec: Dict):
         """Generate api.md"""
-        content = ["# Спецификация API\n"]
+        content = ["# Спецификация API\n\n"]
+        content.extend(self._sections_nav(current_depth=1))
         
-        # gRPC endpoints
+        # Collect all files with endpoints
+        files_grpc: Dict[str, List[Dict]] = {}
+        files_rest: Dict[str, List[Dict]] = {}
+        
+        if api_spec.get('grpc'):
+            for endpoint in api_spec['grpc']:
+                file_path = endpoint.get('file', '')
+                files_grpc.setdefault(file_path, []).append(endpoint)
+        
+        if api_spec.get('rest'):
+            for endpoint in api_spec['rest']:
+                file_path = endpoint.get('file', '')
+                files_rest.setdefault(file_path, []).append(endpoint)
+        
+        all_files = sorted(set(list(files_grpc.keys()) + list(files_rest.keys())))
+        
+        # Menu by files
+        if all_files:
+            content.append("## Меню по файлам\n\n")
+            for file_path in all_files:
+                anchor = self._create_anchor_link(file_path)
+                content.append(f"- 📄 [{file_path}](#{anchor})\n")
+            content.append("\n---\n\n")
+        
+        # gRPC endpoints grouped by file
         if api_spec.get('grpc'):
             content.append("## gRPC методы\n\n")
             
-            for endpoint in api_spec['grpc']:
-                content.append(f"### {endpoint['method']}\n")
+            for file_path in sorted(files_grpc.keys()):
+                anchor = self._create_anchor_link(file_path)
+                content.append(f"### {file_path}\n\n")
+                content.append(f"📄 Исходный файл: {self._create_file_link(file_path)}\n\n")
                 
-                # Use existing comment or generate description
-                description = endpoint.get('comment', '').strip()
-                if not description:
-                    description = generate_endpoint_description(
-                        method=endpoint['method'],
-                        request_type=endpoint.get('request_type'),
-                        response_type=endpoint.get('response_type')
-                    )
+                # Expandable list of endpoints
+                endpoints_list = files_grpc[file_path]
+                content.append(f"<details open>\n<summary><b>Методы в этом файле ({len(endpoints_list)})</b></summary>\n\n")
+                for endpoint in sorted(endpoints_list, key=lambda x: x.get('method', '')):
+                    method = endpoint['method']
+                    method_anchor = self._create_anchor_link(method)
+                    content.append(f"- 🔗 [{method}](#{method_anchor})\n")
+                content.append("\n</details>\n\n")
                 
-                if description:
-                    content.append(f"{description}\n\n")
-                
-                # Request type with external link if available
-                request_type = endpoint.get('request_type', '')
-                request_display = f"**Тип запроса:** `{request_type}`"
-                if endpoint.get('proto_link'):
-                    proto_link = endpoint['proto_link']
-                    request_display += f" - [Открыть proto]({proto_link})"
-                content.append(f"{request_display}\n")
-                
-                # Response type with external link if available
-                response_type = endpoint.get('response_type', '')
-                response_display = f"**Тип ответа:** `{response_type}`"
-                if endpoint.get('proto_link'):
-                    response_display += f" - [Открыть proto]({proto_link})"
-                content.append(f"{response_display}\n\n")
-                
-                # Add proto repository info if available
-                if endpoint.get('proto_repo'):
-                    content.append(f"*Proto-определения из: {endpoint['proto_repo']}*\n\n")
-                
-                if endpoint['request_json']:
-                    content.append("**Запрос (JSON):**\n")
-                    content.append("```json")
-                    content.append(json.dumps(endpoint['request_json'], indent=2))
-                    content.append("```\n\n")
-                
-                if endpoint['response_json']:
-                    content.append("**Ответ (JSON):**\n")
-                    content.append("```json")
-                    content.append(json.dumps(endpoint['response_json'], indent=2))
-                    content.append("```\n\n")
-                
-                file_link = self._create_file_link(endpoint['file'])
-                content.append(f"*Определено в: {file_link}*\n\n")
+                # Endpoint details
+                for endpoint in sorted(endpoints_list, key=lambda x: x.get('method', '')):
+                    content.append(f"#### {endpoint['method']}\n\n")
+                    
+                    # Use existing comment or generate description
+                    description = endpoint.get('comment', '').strip()
+                    if not description:
+                        description = generate_endpoint_description(
+                            method=endpoint['method'],
+                            request_type=endpoint.get('request_type'),
+                            response_type=endpoint.get('response_type')
+                        )
+                    
+                    if description:
+                        content.append(f"{description}\n\n")
+                    
+                    # Request type with external link if available
+                    request_type = endpoint.get('request_type', '')
+                    request_display = f"**Тип запроса:** `{request_type}`"
+                    if endpoint.get('proto_link'):
+                        proto_link = endpoint['proto_link']
+                        request_display += f" - [Открыть proto]({proto_link})"
+                    content.append(f"{request_display}\n")
+                    
+                    # Response type with external link if available
+                    response_type = endpoint.get('response_type', '')
+                    response_display = f"**Тип ответа:** `{response_type}`"
+                    if endpoint.get('proto_link'):
+                        response_display += f" - [Открыть proto]({endpoint['proto_link']})"
+                    content.append(f"{response_display}\n\n")
+                    
+                    # Add proto repository info if available
+                    if endpoint.get('proto_repo'):
+                        content.append(f"*Proto-определения из: {endpoint['proto_repo']}*\n\n")
+                    
+                    if endpoint['request_json']:
+                        content.append("**Запрос (JSON):**\n")
+                        content.append("```json")
+                        content.append(json.dumps(endpoint['request_json'], indent=2))
+                        content.append("```\n\n")
+                    
+                    if endpoint['response_json']:
+                        content.append("**Ответ (JSON):**\n")
+                        content.append("```json")
+                        content.append(json.dumps(endpoint['response_json'], indent=2))
+                        content.append("```\n\n")
+                    
+                    file_link = self._create_file_link(endpoint['file'])
+                    content.append(f"📍 *Определено в: {file_link}*\n\n")
         
-        # REST endpoints
+        # REST endpoints grouped by file
         if api_spec.get('rest'):
             content.append("## REST эндпоинты\n\n")
             
-            for endpoint in api_spec['rest']:
-                method = endpoint['method']
-                path = endpoint['path']
+            for file_path in sorted(files_rest.keys()):
+                anchor = self._create_anchor_link(file_path)
+                content.append(f"### {file_path}\n\n")
+                content.append(f"📄 Исходный файл: {self._create_file_link(file_path)}\n\n")
                 
-                content.append(f"### {method} {path}\n")
+                # Expandable list of endpoints
+                endpoints_list = files_rest[file_path]
+                content.append(f"<details open>\n<summary><b>Эндпоинты в этом файле ({len(endpoints_list)})</b></summary>\n\n")
+                for endpoint in sorted(endpoints_list, key=lambda x: (x.get('method', ''), x.get('path', ''))):
+                    method = endpoint['method']
+                    path = endpoint['path']
+                    endpoint_title = f"{method} {path}"
+                    endpoint_anchor = self._create_anchor_link(endpoint_title)
+                    content.append(f"- 🔗 [{endpoint_title}](#{endpoint_anchor})\n")
+                content.append("\n</details>\n\n")
                 
-                # Use existing comment or generate description
-                description = endpoint.get('comment', '').strip()
-                if not description:
-                    description = generate_endpoint_description(
-                        method=method,
-                        path=path,
-                        handler=endpoint.get('handler')
-                    )
-                
-                if description:
-                    content.append(f"{description}\n\n")
-                
-                content.append(f"**Handler:** `{endpoint['handler']}`\n")
-                content.append(f"**Router:** {endpoint['router']}\n\n")
-                
-                file_link = self._create_file_link(endpoint['file'])
-                content.append(f"*Определено в: {file_link}*\n\n")
+                # Endpoint details
+                for endpoint in sorted(endpoints_list, key=lambda x: (x.get('method', ''), x.get('path', ''))):
+                    method = endpoint['method']
+                    path = endpoint['path']
+                    content.append(f"#### {method} {path}\n\n")
+                    
+                    # Use existing comment or generate description
+                    description = endpoint.get('comment', '').strip()
+                    if not description:
+                        description = generate_endpoint_description(
+                            method=method,
+                            path=path,
+                            handler=endpoint.get('handler')
+                        )
+                    
+                    if description:
+                        content.append(f"{description}\n\n")
+                    
+                    content.append(f"**Handler:** `{endpoint['handler']}`\n")
+                    content.append(f"**Router:** {endpoint['router']}\n\n")
+                    
+                    file_link = self._create_file_link(endpoint['file'])
+                    content.append(f"📍 *Определено в: {file_link}*\n\n")
         
         if not api_spec.get('grpc') and not api_spec.get('rest'):
             content.append("API эндпоинты не найдены.\n")
         
+        content.append("\n---\n\n")
+        content.extend(self._sections_nav(current_depth=1))
         output_path = self.sections_dir / 'api.md'
         output_path.write_text('\n'.join(content), encoding='utf-8')
     
     def _generate_tests(self, tests: Dict):
         """Generate tests.md"""
-        content = ["# Тестирование\n"]
+        content = ["# Тестирование\n\n"]
+        content.extend(self._sections_nav(current_depth=1))
+        
+        # Collect all files with tests
+        files_tests: Dict[str, List[Dict]] = {}
+        files_benchmarks: Dict[str, List[Dict]] = {}
+        files_examples: Dict[str, List[Dict]] = {}
         
         if tests.get('tests'):
-            content.append("## Тесты\n\n")
             for test in tests['tests']:
-                content.append(f"### {test['name']}\n")
-                if test['comment']:
-                    content.append(f"{test['comment']}\n\n")
-                if test['subtests']:
-                    content.append("**Сабтесты:**\n")
-                    for subtest in test['subtests']:
-                        content.append(f"- {subtest}\n")
-                file_link = self._create_file_link(test['file'], test.get('line'))
-                content.append(f"*Расположение: {file_link}*\n\n")
+                file_path = test.get('file', '')
+                files_tests.setdefault(file_path, []).append(test)
         
         if tests.get('benchmarks'):
-            content.append("## Бенчмарки\n\n")
             for bench in tests['benchmarks']:
-                content.append(f"### {bench['name']}\n")
-                if bench['comment']:
-                    content.append(f"{bench['comment']}\n\n")
-                file_link = self._create_file_link(bench['file'], bench.get('line'))
-                content.append(f"*Расположение: {file_link}*\n\n")
+                file_path = bench.get('file', '')
+                files_benchmarks.setdefault(file_path, []).append(bench)
         
         if tests.get('examples'):
-            content.append("## Примеры\n\n")
             for example in tests['examples']:
-                content.append(f"### {example['name']}\n")
-                if example['comment']:
-                    content.append(f"{example['comment']}\n\n")
-                file_link = self._create_file_link(example['file'], example.get('line'))
-                content.append(f"*Расположение: {file_link}*\n\n")
+                file_path = example.get('file', '')
+                files_examples.setdefault(file_path, []).append(example)
+        
+        all_files = sorted(set(list(files_tests.keys()) + list(files_benchmarks.keys()) + list(files_examples.keys())))
+        
+        # Menu by files
+        if all_files:
+            content.append("## Меню по файлам\n\n")
+            for file_path in all_files:
+                anchor = self._create_anchor_link(file_path)
+                content.append(f"- 📄 [{file_path}](#{anchor})\n")
+            content.append("\n---\n\n")
+        
+        # Tests grouped by file
+        if tests.get('tests'):
+            content.append("## Тесты\n\n")
+            
+            for file_path in sorted(files_tests.keys()):
+                anchor = self._create_anchor_link(file_path)
+                content.append(f"### {file_path}\n\n")
+                content.append(f"📄 Исходный файл: {self._create_file_link(file_path)}\n\n")
+                
+                # Expandable list of tests
+                tests_list = files_tests[file_path]
+                content.append(f"<details open>\n<summary><b>Тесты в этом файле ({len(tests_list)})</b></summary>\n\n")
+                for test in sorted(tests_list, key=lambda x: (x.get('name', ''), x.get('line', 0))):
+                    test_name = test['name']
+                    test_anchor = self._create_anchor_link(test_name)
+                    line = test.get('line')
+                    if line:
+                        content.append(f"- 🔗 [{test_name}](#{test_anchor}) `:{line}`\n")
+                    else:
+                        content.append(f"- 🔗 [{test_name}](#{test_anchor})\n")
+                content.append("\n</details>\n\n")
+                
+                # Test details
+                for test in sorted(tests_list, key=lambda x: (x.get('name', ''), x.get('line', 0))):
+                    content.append(f"#### {test['name']}\n\n")
+                    if test['comment']:
+                        content.append(f"{test['comment']}\n\n")
+                    if test['subtests']:
+                        content.append("**Сабтесты:**\n")
+                        for subtest in test['subtests']:
+                            content.append(f"- {subtest}\n")
+                        content.append("\n")
+                    file_link = self._create_file_link(test['file'], test.get('line'))
+                    content.append(f"📍 *Расположение: {file_link}*\n\n")
+        
+        # Benchmarks grouped by file
+        if tests.get('benchmarks'):
+            content.append("## Бенчмарки\n\n")
+            
+            for file_path in sorted(files_benchmarks.keys()):
+                anchor = self._create_anchor_link(file_path)
+                content.append(f"### {file_path}\n\n")
+                content.append(f"📄 Исходный файл: {self._create_file_link(file_path)}\n\n")
+                
+                # Expandable list of benchmarks
+                benchmarks_list = files_benchmarks[file_path]
+                content.append(f"<details open>\n<summary><b>Бенчмарки в этом файле ({len(benchmarks_list)})</b></summary>\n\n")
+                for bench in sorted(benchmarks_list, key=lambda x: (x.get('name', ''), x.get('line', 0))):
+                    bench_name = bench['name']
+                    bench_anchor = self._create_anchor_link(bench_name)
+                    line = bench.get('line')
+                    if line:
+                        content.append(f"- 🔗 [{bench_name}](#{bench_anchor}) `:{line}`\n")
+                    else:
+                        content.append(f"- 🔗 [{bench_name}](#{bench_anchor})\n")
+                content.append("\n</details>\n\n")
+                
+                # Benchmark details
+                for bench in sorted(benchmarks_list, key=lambda x: (x.get('name', ''), x.get('line', 0))):
+                    content.append(f"#### {bench['name']}\n\n")
+                    if bench['comment']:
+                        content.append(f"{bench['comment']}\n\n")
+                    file_link = self._create_file_link(bench['file'], bench.get('line'))
+                    content.append(f"📍 *Расположение: {file_link}*\n\n")
+        
+        # Examples grouped by file
+        if tests.get('examples'):
+            content.append("## Примеры\n\n")
+            
+            for file_path in sorted(files_examples.keys()):
+                anchor = self._create_anchor_link(file_path)
+                content.append(f"### {file_path}\n\n")
+                content.append(f"📄 Исходный файл: {self._create_file_link(file_path)}\n\n")
+                
+                # Expandable list of examples
+                examples_list = files_examples[file_path]
+                content.append(f"<details open>\n<summary><b>Примеры в этом файле ({len(examples_list)})</b></summary>\n\n")
+                for example in sorted(examples_list, key=lambda x: (x.get('name', ''), x.get('line', 0))):
+                    example_name = example['name']
+                    example_anchor = self._create_anchor_link(example_name)
+                    line = example.get('line')
+                    if line:
+                        content.append(f"- 🔗 [{example_name}](#{example_anchor}) `:{line}`\n")
+                    else:
+                        content.append(f"- 🔗 [{example_name}](#{example_anchor})\n")
+                content.append("\n</details>\n\n")
+                
+                # Example details
+                for example in sorted(examples_list, key=lambda x: (x.get('name', ''), x.get('line', 0))):
+                    content.append(f"#### {example['name']}\n\n")
+                    if example['comment']:
+                        content.append(f"{example['comment']}\n\n")
+                    file_link = self._create_file_link(example['file'], example.get('line'))
+                    content.append(f"📍 *Расположение: {file_link}*\n\n")
         
         if not tests.get('tests') and not tests.get('benchmarks') and not tests.get('examples'):
             content.append("Тесты не найдены.\n")
         
+        content.append("\n---\n\n")
+        content.extend(self._sections_nav(current_depth=1))
         output_path = self.sections_dir / 'tests.md'
         output_path.write_text('\n'.join(content), encoding='utf-8')
     
     def _generate_libraries(self, libraries: Dict):
         """Generate libraries.md"""
-        content = ["# Используемые библиотеки\n"]
+        content = ["# Используемые библиотеки\n\n"]
+        content.extend(self._sections_nav(current_depth=1))
         
         if libraries.get('module'):
             content.append(f"**Модуль:** `{libraries['module']}`\n\n")
@@ -907,6 +1152,8 @@ class DocumentationGenerator:
         if not libraries.get('dependencies'):
             content.append("Зависимости не найдены.\n")
         
+        content.append("\n---\n\n")
+        content.extend(self._sections_nav(current_depth=1))
         output_path = self.sections_dir / 'libraries.md'
         output_path.write_text('\n'.join(content), encoding='utf-8')
     
@@ -972,7 +1219,8 @@ class DocumentationGenerator:
             "others_user",
         ]
 
-        user_dir = self.user_docs_dir if self.user_docs_dir else (self.docs_dir / "user")
+        # User documentation directory: <go_repo>/docs/ (from source repository)
+        user_dir = self.user_docs_dir
 
         def read_if_exists(p: Path) -> Optional[str]:
             try:
@@ -1013,6 +1261,28 @@ class DocumentationGenerator:
             parts.append("\n")
             return "".join(parts)
 
+        def user_section(title: str, filename: str) -> Optional[str]:
+            """Read user-provided section from <go_repo>/docs/<filename>"""
+            if not user_dir or not user_dir.exists():
+                return None
+            file_path = user_dir / filename
+            content = read_if_exists(file_path)
+            if not content:
+                return None
+            # Extract H2 titles for menu
+            h2 = []
+            for level, t in self._extract_section_titles(content):
+                if level == "h2":
+                    h2.append(t)
+            parts = [f"## {title}\n\n"]
+            if h2:
+                parts.append("- 📚 Меню:\n")
+                for t in h2:
+                    parts.append(f"  - 🔗 [{t}](#{self._create_anchor_link(t)})\n")
+                parts.append("\n---\n\n")
+            parts.append(content)
+            return "".join(parts)
+
         for key in order:
             if not is_enabled(self.rules, key):
                 continue
@@ -1020,16 +1290,13 @@ class DocumentationGenerator:
             title = titles_ru.get(key, key)
 
             if key == "architecture_user":
-                c = menu_only(title, "user/architecture.md")
-                if not c:
-                    # backward compatibility
-                    c = menu_only(title, "user_architecture.md")
+                # Look in <go_repo>/docs/architecture.md
+                c = user_section(title, "architecture.md")
                 if c:
                     sections_content.append((title, c))
             elif key == "db_user":
-                c = menu_only(title, "user/db.md")
-                if not c:
-                    c = menu_only(title, "user_db_structure.md")
+                # Look in <go_repo>/docs/db.md
+                c = user_section(title, "db.md")
                 if c:
                     sections_content.append((title, c))
             elif key == "diagrams":
@@ -1070,13 +1337,14 @@ class DocumentationGenerator:
                 if c:
                     sections_content.append(("Используемые библиотеки", c))
             elif key == "others_user":
-                if user_dir.exists():
+                # Look for other .md files in <go_repo>/docs/ (excluding architecture.md, db.md)
+                if user_dir and user_dir.exists():
                     md_files = [
                         f
                         for f in user_dir.iterdir()
                         if f.is_file()
                         and f.suffix == ".md"
-                        and f.name not in {"architecture.md", "db.md"}
+                        and f.name not in {"architecture.md", "db.md", "RULES.md"}
                     ]
                     if md_files:
                         parts = [f"## {title}\n\n"]

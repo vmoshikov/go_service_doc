@@ -8,22 +8,32 @@ from typing import Dict, List, Optional
 
 
 class Config:
-    def __init__(self, go_dir: Path, config_path: Optional[Path] = None):
+    def __init__(self, go_dir: Path, config_path: Optional[Path] = None, repo_name: Optional[str] = None):
         self.go_dir = go_dir
         self.config_path = config_path or (go_dir / '.doc_config.json')
+        self.repo_name = repo_name
         self.external_repos = {}
         self.proto_mappings = {}
+        self.project_paths = {}  # Maps repo_name -> path in proto repository
         self._load_config()
     
     def _load_config(self):
-        """Load configuration from .doc_config.json"""
+        """Load configuration from .doc_config.json or proto_conf.json"""
         if self.config_path.exists():
             try:
                 config = json.loads(self.config_path.read_text(encoding='utf-8'))
                 self.external_repos = config.get('external_repositories', {})
                 self.proto_mappings = config.get('proto_mappings', {})
+                self.project_paths = config.get('project_paths', {})
             except Exception as e:
                 print(f"Warning: Could not load config: {e}")
+    
+    def get_proto_path_for_project(self, repo_name: Optional[str] = None) -> Optional[str]:
+        """Get the path in proto repository for a specific project."""
+        project_name = repo_name or self.repo_name
+        if not project_name:
+            return None
+        return self.project_paths.get(project_name)
     
     def get_proto_repo(self, proto_package: str) -> Optional[Dict]:
         """Get repository information for a proto package"""
@@ -96,6 +106,11 @@ class Config:
                 "pbExample": "proto-repo",
                 "pbCommon": "common-proto",
                 "com.example": "proto-repo"
+            },
+            "project_paths": {
+                "kagent": "proto/kagent",
+                "user-service": "proto/users",
+                "order-service": "proto/orders"
             }
         }
 

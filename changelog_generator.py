@@ -17,11 +17,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from changelog.git_analyzer import GitAnalyzer
+from rules import get_changelog_config, load_rules_for_repo, normalize_rules
 
 KEEP_A_CHANGELOG_URL_RU = "https://keepachangelog.com/ru/0.3.0/"
 SEMVER_URL = "https://semver.org/spec/v2.0.0.html"
 
-JIRA_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
 CONVENTIONAL_RE = re.compile(
     r"^(?P<type>[a-zA-Z]+)"
     r"(?:\((?P<scope>[^)]+)\))?"
@@ -110,8 +110,18 @@ class GigaChatClientStub:
 
 
 class ChangelogGenerator:
-    def __init__(self, go_dir: Path, output_path: Optional[Path] = None):
+    def __init__(
+        self,
+        go_dir: Path,
+        output_path: Optional[Path] = None,
+        rules: Optional[Dict] = None,
+    ):
         self.go_dir = go_dir
+        self.rules = rules or {}
+        self._changelog_cfg = get_changelog_config(self.rules)
+        self._task_key_re = re.compile(
+            "(" + self._changelog_cfg["task_key_pattern"] + ")"
+        )
         if output_path:
             out = output_path
             # If user passed a directory, write CHANGELOG.md inside it.
@@ -124,7 +134,8 @@ class ChangelogGenerator:
         else:
             self.changelog_path = go_dir / "CHANGELOG.md"
         self.git_analyzer = GitAnalyzer(go_dir)
-        self.llm = GigaChatClientStub(jira_base_url=os.getenv("JIRA_BASE_URL"))
+        tracker_url = self._changelog_cfg.get("task_tracker_url") or os.getenv("JIRA_BASE_URL")
+        self.llm = GigaChatClientStub(jira_base_url=tracker_url)
     
     def generate(self, version: Optional[str] = None, since: Optional[str] = None):
         """
@@ -160,7 +171,10 @@ class ChangelogGenerator:
                 return
             diff_files = self.git_analyzer.get_diff_name_status(older_ref, "HEAD")
             release_date = datetime.now().strftime("%Y-%m-%d")
-            entries_by_category = self._build_release_entries(commits=commits, diff_files=diff_files)
+            entries_by_category = self._build_release_entries(
+                commits=commits, diff_files=diff_files,
+                older_ref=older_ref, newer_ref="HEAD",
+            )
             new_content = self._insert_release_section(
                 content=content,
                 version=release_version,
@@ -201,15 +215,23 @@ class ChangelogGenerator:
 
         print(f"Analyzing release diff: {older_ref or '<root>'}..{tag}")
         commits = self.git_analyzer.get_commits_between(older_ref, tag)
-        if not commits:
+        if self._changelog_cfg.get("branches_only"):
+            merges = self.git_analyzer.get_merged_branches_in_range(older_ref, tag)
+            if not merges:
+                print("No merge commits (branches) found in release range. Nothing to update.")
+                return
+        elif not commits:
             print("No commits found for release range. Nothing to update.")
             return
 
         diff_files = self.git_analyzer.get_diff_name_status(older_ref, tag)
         release_date = self._get_ref_date(tag) or datetime.now().strftime("%Y-%m-%d")
 
-        # 5) Build changelog bullets (grouped by message/task, summarized via LLM stub).
-        entries_by_category = self._build_release_entries(commits=commits, diff_files=diff_files)
+        # 5) Build changelog bullets (по веткам: 1 ветка = 1 пункт, или по коммитам).
+        entries_by_category = self._build_release_entries(
+            commits=commits, diff_files=diff_files,
+            older_ref=older_ref, newer_ref=tag,
+        )
 
         # 6) Merge + roll Unreleased into the release (Keep a Changelog workflow).
         new_content = self._insert_release_section(
@@ -245,10 +267,17 @@ class ChangelogGenerator:
                 continue
             prev = self.git_analyzer.get_previous_tag(tag)
             commits = self.git_analyzer.get_commits_between(prev, tag)
-            if not commits:
+            if not commits and not self._changelog_cfg.get("branches_only"):
                 continue
+            if self._changelog_cfg.get("branches_only"):
+                merges = self.git_analyzer.get_merged_branches_in_range(prev, tag)
+                if not merges:
+                    continue
             date = self._get_ref_date(tag) or datetime.now().strftime("%Y-%m-%d")
-            entries = self._build_release_entries(commits=commits, diff_files=self.git_analyzer.get_diff_name_status(prev, tag))
+            entries = self._build_release_entries(
+                commits=commits, diff_files=self.git_analyzer.get_diff_name_status(prev, tag),
+                older_ref=prev, newer_ref=tag,
+            )
             content = self._insert_release_section(
                 content=content,
                 version=version,
@@ -319,7 +348,10 @@ class ChangelogGenerator:
         else:
             unreleased_commits = self.git_analyzer.get_commits_since(None)
 
-        unreleased_entries = self._build_release_entries(commits=unreleased_commits, diff_files=[])
+        unreleased_entries = self._build_release_entries(
+            commits=unreleased_commits, diff_files=[],
+            older_ref=latest_tag, newer_ref="HEAD",
+        )
         unreleased_section = self._render_release_section(version="Unreleased", date="", entries_by_category=unreleased_entries)
 
         parts: List[str] = [header.rstrip(), "", unreleased_section.rstrip(), ""]
@@ -329,10 +361,17 @@ class ChangelogGenerator:
         for tag in tags_newest_first:
             prev = self.git_analyzer.get_previous_tag(tag)
             commits = self.git_analyzer.get_commits_between(prev, tag)
-            if not commits:
+            if not commits and not self._changelog_cfg.get("branches_only"):
                 continue
+            if self._changelog_cfg.get("branches_only"):
+                merges = self.git_analyzer.get_merged_branches_in_range(prev, tag)
+                if not merges:
+                    continue
             date = self._get_ref_date(tag) or datetime.now().strftime("%Y-%m-%d")
-            entries = self._build_release_entries(commits=commits, diff_files=self.git_analyzer.get_diff_name_status(prev, tag))
+            entries = self._build_release_entries(
+                commits=commits, diff_files=self.git_analyzer.get_diff_name_status(prev, tag),
+                older_ref=prev, newer_ref=tag,
+            )
             version = tag.lstrip("v")
             parts.append(self._render_release_section(version=version, date=date, entries_by_category=entries))
             parts.append("")
@@ -428,11 +467,92 @@ class ChangelogGenerator:
             replace_unreleased=True,
         )
 
-    def _build_release_entries(self, *, commits: List[Dict], diff_files: List[Tuple[str, str]]) -> Dict[str, List[str]]:
+    def _build_release_entries(
+        self,
+        *,
+        commits: List[Dict],
+        diff_files: List[Tuple[str, str]],
+        older_ref: Optional[str] = None,
+        newer_ref: Optional[str] = None,
+    ) -> Dict[str, List[str]]:
         """
-        Build bullet entries grouped by same message and/or same JIRA issue.
-        Each group is summarized through an LLM interface (stubbed for GigaChat).
+        Строит пункты changelog. Если branches_only — только по merge-веткам (1 ветка = 1 пункт).
+        Иначе — по коммитам (группировка по задаче/сообщению).
         """
+        if self._changelog_cfg.get("branches_only") and older_ref is not None and newer_ref is not None:
+            return self._build_release_entries_from_branches(older_ref=older_ref, newer_ref=newer_ref)
+        return self._build_release_entries_from_commits(commits=commits, diff_files=diff_files)
+
+    def _build_release_entries_from_branches(
+        self, *, older_ref: str, newer_ref: str
+    ) -> Dict[str, List[str]]:
+        """
+        1 ветка = 1 задача = 1 пункт. Только merge-коммиты в теге.
+        """
+        merges = self.git_analyzer.get_merged_branches_in_range(older_ref, newer_ref)
+        prefix_map = self._changelog_cfg.get("branch_prefix_to_category") or {}
+
+        entries_by_category: Dict[str, List[str]] = {k: [] for k in KEEP_A_CHANGELOG_CATEGORIES_RU}
+
+        for m in merges:
+            branch_name = m.get("branch_name")
+            if not branch_name:
+                continue
+            task_key = None
+            mo = self._task_key_re.search(branch_name)
+            if mo:
+                task_key = mo.group(1)
+
+            category = "Изменено"
+            branch_lower = branch_name.lower()
+            for prefix, cat in prefix_map.items():
+                if branch_lower.startswith(prefix.lower()):
+                    category = cat
+                    break
+
+            if category not in entries_by_category:
+                entries_by_category[category] = []
+
+            desc = self._branch_to_description(branch_name, m.get("subject", ""), task_key)
+            bullet = self.llm.summarize_event(
+                category=category,
+                jira_key=task_key,
+                commits=[ParsedCommit(
+                    commit=CommitInfo(sha=m["hash"], subject=m["subject"], body=m.get("body", ""),
+                                    author="", email="", date_iso=""),
+                    conventional_type=None,
+                    conventional_scope=None,
+                    description=desc,
+                    is_breaking=False,
+                    jira_key=task_key,
+                )],
+            )
+            bullet = bullet.strip().lstrip("-").strip()
+            if bullet:
+                entries_by_category[category].append(bullet)
+
+        for k in list(entries_by_category.keys()):
+            seen = set()
+            entries_by_category[k] = [b for b in entries_by_category[k] if b not in seen and not seen.add(b)]
+
+        return entries_by_category
+
+    def _branch_to_description(self, branch_name: str, merge_subject: str, task_key: Optional[str]) -> str:
+        """Краткое описание из имени ветки (часть после task_key) или из merge subject."""
+        if task_key and task_key in branch_name:
+            rest = branch_name.split(task_key, 1)[-1].strip("-_/ ")
+            if rest:
+                return rest.replace("-", " ").replace("_", " ")
+        if merge_subject:
+            for prefix in ("Merge branch ", "Merge ", "Merge pull "):
+                if merge_subject.startswith(prefix):
+                    return merge_subject[len(prefix):].strip("'\"").split("'")[0] or branch_name
+        return branch_name
+
+    def _build_release_entries_from_commits(
+        self, *, commits: List[Dict], diff_files: List[Tuple[str, str]]
+    ) -> Dict[str, List[str]]:
+        """Fallback: группировка по коммитам (задача/сообщение)."""
         parsed: List[ParsedCommit] = []
         for c in commits:
             ci = CommitInfo(
@@ -463,16 +583,9 @@ class ChangelogGenerator:
                 continue
             entries_by_category[category].append(bullet)
 
-        # de-dup (stable) + drop empties
         for k in list(entries_by_category.keys()):
             seen = set()
-            out = []
-            for b in entries_by_category[k]:
-                if b in seen:
-                    continue
-                seen.add(b)
-                out.append(b)
-            entries_by_category[k] = out
+            entries_by_category[k] = [b for b in entries_by_category[k] if b not in seen and not seen.add(b)]
 
         return entries_by_category
 
@@ -482,9 +595,9 @@ class ChangelogGenerator:
         full_text = f"{subject}\n{body}"
 
         jira_key = None
-        m_jira = JIRA_KEY_RE.search(full_text)
-        if m_jira:
-            jira_key = m_jira.group(1)
+        mo = self._task_key_re.search(full_text)
+        if mo:
+            jira_key = mo.group(1)
 
         conventional_type = None
         conventional_scope = None
@@ -720,16 +833,30 @@ def main():
         default=None,
         help='Output path for CHANGELOG.md (file or directory). Default: <repo>/CHANGELOG.md'
     )
+    parser.add_argument(
+        '--task-pattern',
+        type=str,
+        default=None,
+        help='Regex для ключа задачи (ключ-число). Переопределяет rules/changelog.task_key_pattern'
+    )
     
     args = parser.parse_args()
     
-    go_dir = Path(args.directory)
+    go_dir = Path(args.directory).expanduser().resolve()
     if not go_dir.exists():
         print(f"Error: Directory '{go_dir}' does not exist", file=sys.stderr)
         sys.exit(1)
     
+    repo_name = go_dir.name
+    rules, _ = load_rules_for_repo(repo_name, Path.cwd())
+    if not _:
+        rules, _ = load_rules_for_repo(repo_name, Path(__file__).resolve().parent)
+    rules = normalize_rules(rules)
+    if args.task_pattern:
+        rules.setdefault("changelog", {})["task_key_pattern"] = args.task_pattern
+    
     output_path = Path(args.output).expanduser().resolve() if args.output else None
-    generator = ChangelogGenerator(go_dir, output_path=output_path)
+    generator = ChangelogGenerator(go_dir, output_path=output_path, rules=rules)
     generator.generate(version=args.version, since=args.since)
 
 

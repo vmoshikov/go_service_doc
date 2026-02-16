@@ -62,6 +62,27 @@ DEFAULT_RULES: Dict[str, Any] = {
         "libraries",
         "others_user",
     ],
+    "changelog": {
+        # Формировать changelog только по веткам (merge-коммиты в теге). 1 ветка = 1 задача = 1 пункт.
+        "branches_only": True,
+        # Паттерн ключа задачи (форма: ключ-число). Извлекается из имени ветки.
+        # Примеры: ABC-123, JIRA-456. Регулярное выражение, группа захвата — первый найденный ключ.
+        "task_key_pattern": r"[A-Z][A-Z0-9]+-\d+",
+        # Маппинг префикса ветки -> категория changelog (Добавлено/Изменено/Удалено/Исправлено)
+        "branch_prefix_to_category": {
+            "feature/": "Добавлено",
+            "feat/": "Добавлено",
+            "bugfix/": "Исправлено",
+            "fix/": "Исправлено",
+            "hotfix/": "Исправлено",
+            "release/": "Изменено",
+            "refactor/": "Изменено",
+            "remove/": "Удалено",
+            "revert/": "Удалено",
+        },
+        # URL трекера задач для ссылок. Если пусто — JIRA_BASE_URL из env.
+        "task_tracker_url": None,
+    },
 }
 
 
@@ -75,8 +96,12 @@ def _extract_first_json_block(md_text: str) -> Optional[str]:
 
 def _merge_rules(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(base)
-    # merge top-level keys except sections/features/conflicts (handled separately)
-    merged.update({k: v for k, v in override.items() if k not in ("sections", "features", "conflicts")})
+    # merge top-level keys except sections/features/conflicts/changelog (handled separately)
+    merged.update({k: v for k, v in override.items() if k not in ("sections", "features", "conflicts", "changelog")})
+
+    changelog = dict(base.get("changelog") or {})
+    changelog.update(override.get("changelog") or {})
+    merged["changelog"] = changelog
 
     # merge features (deep-ish)
     features = dict(base.get("features", {}))
@@ -185,4 +210,20 @@ def is_enabled(rules: Dict[str, Any], section_key: str) -> bool:
         return bool(rules.get("sections", {}).get(section_key, {}).get("enabled", True))
     except Exception:
         return True
+
+
+def get_changelog_config(rules: Dict[str, Any]) -> Dict[str, Any]:
+    """Возвращает конфиг changelog из правил."""
+    cfg = rules.get("changelog") or {}
+    return {
+        "branches_only": cfg.get("branches_only", True),
+        "task_key_pattern": cfg.get("task_key_pattern") or r"[A-Z][A-Z0-9]+-\d+",
+        "branch_prefix_to_category": cfg.get("branch_prefix_to_category") or {
+            "feature/": "Добавлено", "feat/": "Добавлено",
+            "bugfix/": "Исправлено", "fix/": "Исправлено", "hotfix/": "Исправлено",
+            "release/": "Изменено", "refactor/": "Изменено",
+            "remove/": "Удалено", "revert/": "Удалено",
+        },
+        "task_tracker_url": cfg.get("task_tracker_url"),
+    }
 

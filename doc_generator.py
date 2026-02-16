@@ -214,16 +214,6 @@ def main():
     docs_dir = docs_root / repo_name
     docs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load rules:
-    # - defaults always exist
-    # - repo-specific override: ./rules/<repo_name>.json (relative to cwd or script dir)
-    rules, _src = load_rules_for_repo(repo_name, Path.cwd())
-    if _src is None:
-        rules2, _src2 = load_rules_for_repo(repo_name, Path(__file__).resolve().parent)
-        if _src2 is not None:
-            rules = rules2
-    rules = normalize_rules(rules)
-
     # Determine go_dir:
     # - if local path exists -> use it directly (test mode)
     # - else treat as repo URL and clone to temp
@@ -241,6 +231,45 @@ def main():
         go_dir = cloned_repo_dir
 
     print(f"Analyzing Go service at: {go_dir}")
+
+    # User documentation directory: <go_repo>/docs/ (in source repository)
+    user_docs_dir = go_dir / "docs"
+    if not user_docs_dir.exists():
+        user_docs_dir = None
+        print(f"Tip: Create {go_dir.name}/docs/ directory in source repository for user-provided documentation")
+    else:
+        print(f"Found user documentation directory: {user_docs_dir}")
+
+    # Load rules (priority order):
+    # 1) docs/<repo_name>/RULES.md (in docs repository - user can customize before first generation)
+    # 2) ./rules/<repo_name>.json (repo-specific override in generator repo)
+    # 3) defaults
+    rules = None
+    rules_src = None
+    
+    # First: check docs/<repo_name>/RULES.md (highest priority - user customization)
+    docs_rules_md = docs_dir / "RULES.md"
+    if docs_rules_md.exists():
+        from rules import load_rules_from_md
+        rules = load_rules_from_md(docs_rules_md)
+        rules_src = docs_rules_md
+        print(f"Loaded rules from: {docs_rules_md}")
+    
+    # Second: check ./rules/<repo_name>.json
+    if rules is None:
+        rules, rules_src = load_rules_for_repo(repo_name, Path.cwd())
+        if rules_src is None:
+            rules2, rules_src2 = load_rules_for_repo(repo_name, Path(__file__).resolve().parent)
+            if rules_src2 is not None:
+                rules = rules2
+                rules_src = rules_src2
+    
+    if rules_src:
+        print(f"Using rules from: {rules_src}")
+    else:
+        print("Using default rules")
+    
+    rules = normalize_rules(rules)
 
     # External proto config (generator setting, stored in docs/<repo_name>/)
     proto_config_path: Optional[Path] = None
@@ -270,18 +299,24 @@ def main():
             tag_ref = ref
         changelog_out = docs_dir / "CHANGELOG.md"
         print(f"Generating CHANGELOG: {changelog_out}")
-        ChangelogGenerator(go_dir, output_path=changelog_out).generate(version=tag_ref)
+        ChangelogGenerator(go_dir, output_path=changelog_out, rules=rules).generate(version=tag_ref)
         print(f"CHANGELOG generated successfully: {changelog_out}")
         return
 
     function_parser = FunctionParser(go_dir)
-    api_parser = APIParser(go_dir, config_path=proto_config_path) if is_enabled(rules, "api") else None
+    cache_dir = docs_dir / ".cache"
+    api_parser = APIParser(
+        go_dir, 
+        config_path=proto_config_path,
+        repo_name=repo_name,
+        cache_dir=(cache_dir / "proto")
+    ) if is_enabled(rules, "api") else None
     test_parser = TestParser(go_dir) if is_enabled(rules, "tests") else None
     library_parser = LibraryParser(go_dir) if is_enabled(rules, "libraries") else None
     import_parser = ImportParser(
         go_dir,
         rules=rules,
-        cache_dir=(docs_dir / ".cache" / "imports"),
+        cache_dir=(cache_dir / "imports"),
     ) if is_enabled(rules, "imports") else None
     struct_parser = StructParser(go_dir) if is_enabled(rules, "structures") else None
     
@@ -296,6 +331,20 @@ def main():
     if (not api_parser) and struct_parser:
         print("Parsing structs...")
         api_spec["structs"] = struct_parser.parse()
+    
+    # Enrich structs from proto repository if available
+    if proto_config_path and proto_config_path.exists():
+        from parsers.proto_struct_extractor import ProtoStructExtractor
+        from config import Config
+        proto_config = Config(go_dir, config_path=proto_config_path, repo_name=repo_name)
+        proto_extractor = ProtoStructExtractor(proto_config, cache_dir=(cache_dir / "proto"))
+        proto_structs = proto_extractor.get_structs_for_project(repo_name)
+        if proto_structs:
+            print(f"Found {len(proto_structs)} structs from proto repository")
+            # Merge proto structs (proto takes precedence)
+            for struct_name, struct_def in proto_structs.items():
+                struct_def['from_proto'] = True
+                api_spec["structs"][struct_name] = struct_def
     
     # Pass structs to function parser for struct type extraction
     functions: List[Dict] = []
@@ -333,7 +382,7 @@ def main():
     doc_generator = DocumentationGenerator(
         go_dir=go_dir,
         docs_dir=docs_dir,
-        user_docs_dir=(docs_dir / "user"),
+        user_docs_dir=user_docs_dir,  # <go_repo>/docs/ from source repository
         repo_name=repo_name,
         repo_ref=ref,
         repo_web_url=repo_web_url,
@@ -358,7 +407,7 @@ def main():
             tag_ref = ref
         changelog_out = docs_dir / "CHANGELOG.md"
         print(f"Generating CHANGELOG: {changelog_out}")
-        ChangelogGenerator(go_dir, output_path=changelog_out).generate(version=tag_ref)
+        ChangelogGenerator(go_dir, output_path=changelog_out, rules=rules).generate(version=tag_ref)
         print(f"CHANGELOG generated successfully: {changelog_out}")
 
 

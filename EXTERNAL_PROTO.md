@@ -36,6 +36,11 @@
     "pbExample": "proto-repo",
     "pbCommon": "common-proto",
     "com.example": "proto-repo"
+  },
+  "project_paths": {
+    "kagent": "proto/kagent",
+    "user-service": "proto/users",
+    "order-service": "proto/orders"
   }
 }
 ```
@@ -57,6 +62,15 @@
 
 - Ключ: Имя proto пакета или префикс (например, `pbExample`, `com.example`)
 - Значение: Имя репозитория из `external_repositories`
+
+### project_paths
+
+Сопоставляет имена проектов с путями в proto репозитории, где находятся структуры для этого проекта:
+
+- Ключ: Имя проекта (например, `kagent`, `user-service`)
+- Значение: Путь относительно `path` в `external_repositories` (например, `proto/kagent`)
+
+Это позволяет генератору автоматически клонировать proto репозиторий и извлекать структуры из нужной директории для обогащения документации API и функций.
 
 ## Примеры
 
@@ -132,7 +146,9 @@
 
 3. **Генерация ссылки**: Создает ссылку на proto файл во внешнем репозитории
 
-4. **Документация**: Добавляет ссылку в документацию API
+4. **Извлечение структур**: Если настроен `project_paths`, генератор клонирует proto репозиторий и извлекает структуры из директории проекта для обогащения документации
+
+5. **Документация**: Добавляет ссылку в документацию API и обогащает функции JSON-представлениями структур из proto репозитория
 
 ## Генерируемая документация
 
@@ -195,3 +211,35 @@ python -c "from pathlib import Path; from config import Config; Config.create_ex
   }
 }
 ```
+
+### Пример 4: Обогащение структур из Proto репозитория
+
+Если структуры для API находятся в отдельном proto репозитории по разным директориям для каждого проекта:
+
+```json
+{
+  "external_repositories": {
+    "shared-proto": {
+      "url": "https://github.com/mycompany/shared-proto",
+      "path": "proto",
+      "branch": "main",
+      "description": "Общие proto определения"
+    }
+  },
+  "proto_mappings": {
+    "pb": "shared-proto"
+  },
+  "project_paths": {
+    "kagent": "proto/kagent",
+    "user-service": "proto/users",
+    "order-service": "proto/orders"
+  }
+}
+```
+
+При генерации документации для проекта `kagent`, генератор:
+1. Клонирует репозиторий `shared-proto`
+2. Извлекает структуры из директории `proto/kagent` (относительно `path: "proto"`)
+3. Использует эти структуры для обогащения документации API и функций
+
+Структуры из proto репозитория автоматически добавляются в документацию функций с JSON-представлениями полей.

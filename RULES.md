@@ -8,16 +8,19 @@
 
 ## Какие разделы заполняет скрипт, а какие пользователь
 
-- **Пользователь заполняет вручную** (если нужны):
-  - `docs/<repo_name>/user/architecture.md` — архитектура сервиса
-  - `docs/<repo_name>/user/db.md` — структура БД (опционально)
-  - `docs/<repo_name>/user/*.md` — любые дополнительные разделы (“Прочее”)
+- **Пользователь заполняет вручную** (в исходном Go‑репозитории):
+  - `<go_repo>/docs/architecture.md` — архитектура сервиса
+  - `<go_repo>/docs/db.md` — структура БД (опционально)
+  - `<go_repo>/docs/*.md` — любые дополнительные разделы (“Прочее”)
+  
+  При генерации документации эти файлы автоматически включаются в `docs/<repo_name>/README.md`.
 
 - **Скрипт заполняет автоматически**:
   - `docs/<repo_name>/README.md` — главный README со сводкой и навигацией (по правилам порядка ниже)
   - `docs/<repo_name>/RULES.md` — снимок применённых правил (генерируется, если отсутствует)
   - `docs/<repo_name>/CHANGELOG.md` — changelog (генерируется как заглушка, если отсутствует)
-  - `docs/<repo_name>/sections/functions.md` — функции (меню + детализация)
+  - `docs/<repo_name>/sections/functions.md` — функции (индекс по директориям верхнего уровня)
+  - `docs/<repo_name>/sections/functions/*.md` — функции (детализация по директориям верхнего уровня)
   - `docs/<repo_name>/sections/structures.md` — структуры/типы из Go‑кода (best effort)
   - `docs/<repo_name>/sections/api.md` — спецификация API (gRPC + REST)
   - `docs/<repo_name>/sections/tests.md` — тесты/бенчмарки/примеры
@@ -44,9 +47,13 @@
 
 По умолчанию используются встроенные **дефолтные правила**.
 
-Если создать файл `./rules/<repo_name>.json`, то для конкретного репозитория будут использоваться правила из него (поверх дефолта).
+Приоритет загрузки правил (от высшего к низшему):
 
-`RULES.md` содержит справку и примеры. JSON‑блок ниже оставлен для обратной совместимости, но рекомендуемый способ — `./rules/<repo_name>.json`.
+1. **`docs/<repo_name>/RULES.md`** в репозитории документации (пользователь может создать перед первой генерацией)
+2. **`./rules/<repo_name>.json`** в репозитории генератора (repo-specific override)
+3. **Дефолтные правила** (встроенные)
+
+`RULES.md` в репозитории документации создаётся автоматически при первой генерации (если отсутствует) и **не перезаписывается** при последующих запусках, чтобы сохранить пользовательские настройки.
 
 ### Дополнительные возможности конфигурации
 
@@ -61,6 +68,13 @@
     - `features.import_clone.max_repos` — лимит репозиториев на запуск
     - `features.import_clone.hosts` — allowlist хостов (пусто = все)
     - `features.import_clone.overrides` — ручные override для нетипичных VCS
+
+- **Changelog (по веткам)**
+  - Changelog формируется **только по merge-веткам** в теге. 1 ветка = 1 задача = 1 пункт.
+  - `changelog.branches_only` — true (по умолчанию): только merge-коммиты
+  - `changelog.task_key_pattern` — regex для ключа задачи (форма: ключ-число). Пример: `[A-Z][A-Z0-9]+-\d+` (ABC-123), `[A-Za-z0-9]+-\d+` (гибче)
+  - `changelog.branch_prefix_to_category` — маппинг префикса ветки → категория: `feature/` → Добавлено, `fix/` → Исправлено, `remove/` → Удалено и т.д.
+  - `changelog.task_tracker_url` — URL трекера для ссылок (иначе JIRA_BASE_URL из env)
 
 ```json
 {
@@ -88,7 +102,17 @@
     "tests",
     "libraries",
     "others_user"
-  ]
+  ],
+  "changelog": {
+    "branches_only": true,
+    "task_key_pattern": "[A-Z][A-Z0-9]+-\\d+",
+    "branch_prefix_to_category": {
+      "feature/": "Добавлено",
+      "fix/": "Исправлено",
+      "remove/": "Удалено"
+    },
+    "task_tracker_url": null
+  }
 }
 ```
 
