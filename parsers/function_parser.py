@@ -61,7 +61,24 @@ class FunctionParser:
             'error', 'context', 'Context'
         }
         return type_name in basic_types or type_name.startswith('[]') or type_name.startswith('map[')
-    
+
+    def _extract_returns_error(self, returns: str) -> bool:
+        """True if the function return signature includes error (or error type)."""
+        if not returns or not returns.strip():
+            return False
+        s = returns.strip().strip('()')
+        return bool(re.search(r'\berror\b', s))
+
+    def _extract_return_types(self, returns: str) -> List[str]:
+        """Parse return signature into list of type strings, e.g. ['*pb.Response', 'error']."""
+        if not returns or not returns.strip():
+            return []
+        s = returns.strip().strip('()').strip()
+        if not s:
+            return []
+        parts = [p.strip() for p in re.split(r'\s*,\s*', s)]
+        return [p for p in parts if p]
+
     def parse(self) -> List[Dict]:
         """Parse all Go functions from the codebase."""
         functions = []
@@ -156,8 +173,10 @@ class FunctionParser:
             if not sig['name']:
                 continue
             
-            # Extract struct types
+            # Extract struct types and error return info
             struct_types = self._extract_struct_types(params, returns)
+            returns_error = self._extract_returns_error(returns)
+            return_types = self._extract_return_types(returns)
             
             functions.append({
                 'name': sig['name'],
@@ -166,6 +185,8 @@ class FunctionParser:
                 'returns': returns,
                 'comment': sig['comment'],
                 'struct_types': struct_types,
+                'returns_error': returns_error,
+                'return_types': return_types,
                 'file': str(file_path.relative_to(self.go_dir)),
                 'line': func_node.start_point[0] + 1
             })
@@ -215,16 +236,21 @@ class FunctionParser:
             start_pos = match.start()
             line_num = content[:start_pos].count('\n') + 1
             
-            # Extract struct types
-            struct_types = self._extract_struct_types(params.strip(), returns.strip())
+            # Extract struct types and error return info
+            returns_str = returns.strip()
+            struct_types = self._extract_struct_types(params.strip(), returns_str)
+            returns_error = self._extract_returns_error(returns_str)
+            return_types = self._extract_return_types(returns_str)
             
             functions.append({
                 'name': name,
                 'receiver': receiver.strip() if receiver else None,
                 'params': params.strip(),
-                'returns': returns.strip(),
+                'returns': returns_str,
                 'comment': comment_text,
                 'struct_types': struct_types,
+                'returns_error': returns_error,
+                'return_types': return_types,
                 'file': str(file_path.relative_to(self.go_dir)),
                 'line': line_num
             })

@@ -19,6 +19,8 @@ DEFAULT_RULES: Dict[str, Any] = {
     "language": "ru",
     # Directories to exclude from analysis (paths relative to repo root). Example: ["vendor", "third_party", "generated"]
     "exclude_dirs": ["vendor"],
+    # Functions doc grouping: 1 = by top-level dir, 2 = by two path levels, 0 or null = by full parent dir of each file
+    "functions_group_depth": 2,
     "features": {
         # If true, major sections in main README are rendered as menus only (links to detailed files)
         "thin_readme": True,

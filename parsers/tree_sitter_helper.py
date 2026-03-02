@@ -179,12 +179,19 @@ class TreeSitterGoParser:
                 pass
         
         # Look for result (return type)
-        # Result can be: type_identifier, parameter_list (for multiple returns), etc.
-        # We'll extract the full result node if present
+        # Result can be: type_identifier, pointer_type, slice_type, or parameter_list for (T, error)
+        param_list_count = 0
         for child in func_node.children:
-            if child.type in ['type_identifier', 'pointer_type', 'slice_type']:
-                if not result['returns']:
+            if child.type == 'parameter_list':
+                param_list_count += 1
+                if is_method and param_list_count == 3:
                     result['returns'] = self.get_node_text(child, source)
+                    break
+                if not is_method and param_list_count == 2:
+                    result['returns'] = self.get_node_text(child, source)
+                    break
+            elif child.type in ['type_identifier', 'pointer_type', 'slice_type'] and not result['returns']:
+                result['returns'] = self.get_node_text(child, source)
         
         return result
     

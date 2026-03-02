@@ -522,15 +522,30 @@ class DocumentationGenerator:
             (self.sections_dir / "functions.md").write_text("\n".join(content), encoding="utf-8")
             return
 
-        # Group by parent directory of the file (deepest level: one group per dir containing .go files)
+        # Hybrid grouping by depth: functions_group_depth 1 = top-level, 2 = two levels, null/0 = full path (parent dir)
+        group_depth = self.rules.get("functions_group_depth")
+        if group_depth is None:
+            group_depth = 0  # full = by parent dir of file
+        try:
+            group_depth = int(group_depth)
+        except (TypeError, ValueError):
+            group_depth = 0
+
+        def dir_key_from_path(fp: str) -> str:
+            if not fp:
+                return "."
+            if "/" not in fp:
+                return "."
+            parent_dir = fp.rsplit("/", 1)[0]
+            if group_depth <= 0:
+                return parent_dir
+            parts = parent_dir.split("/")
+            return "/".join(parts[:group_depth]) if parts else "."
+
         grouped: Dict[str, List[Dict]] = {}
         for func in functions:
             fp = func.get("file", "")
-            # Parent dir of file: "cmd/server/main.go" -> "cmd/server", "main.go" -> "."
-            if "/" in fp:
-                dir_key = fp.rsplit("/", 1)[0]
-            else:
-                dir_key = "."
+            dir_key = dir_key_from_path(fp)
             grouped.setdefault(dir_key, []).append(func)
 
         functions_dir = self.sections_dir / "functions"
@@ -674,6 +689,21 @@ class DocumentationGenerator:
                             else:
                                 page.append("*Определение не найдено в проекте (тип может быть во внешнем proto).*\n\n")
 
+                    # Возвращаемые ошибки
+                    if func.get("returns_error"):
+                        page.append("**Возвращаемые ошибки:** функция возвращает `error`; при ошибке вызывающий код получает ненулевой `error` (см. сигнатуру выше).\n\n")
+                        return_types = func.get("return_types") or []
+                        if return_types:
+                            types_str = ", ".join(f"`{t}`" for t in return_types)
+                            page.append(f"*Типы возврата:* {types_str}\n\n")
+                        # Пример возврата ошибки в зависимости от сигнатуры
+                        if len(return_types) == 1 and return_types[0].strip() == "error":
+                            page.append("*Пример возврата ошибки:* `return err` или `return fmt.Errorf(\"описание: %w\", err)`\n\n")
+                        elif len(return_types) >= 2:
+                            page.append("*Пример возврата ошибки:* `return nil, err` (или `return nil, fmt.Errorf(\"...\")`)\n\n")
+                        else:
+                            page.append("*Пример возврата ошибки:* при ошибке возвращается ненулевой `error` (см. код функции).\n\n")
+
                     page.append(f"📍 *Расположение:* {self._create_file_link(file_path, func.get('line'))}\n\n")
 
                 page.append("\n")
@@ -686,7 +716,10 @@ class DocumentationGenerator:
         # 2) Write index file (sections/functions.md)
         index: List[str] = ["# Функции\n\n"]
         index.extend(self._sections_nav(current_depth=1))
-        index.append("## Директории (по месту расположения файлов)\n\n")
+        if group_depth > 0:
+            index.append(f"## Группировка по глубине (уровней: {group_depth})\n\n")
+        else:
+            index.append("## Директории (по месту расположения файлов)\n\n")
         index.append("- [К оглавлению документации](../README.md)\n\n")
         for item in dir_items:
             index.append(f"- 📁 [{item['dir']}]({item['rel_path']})\n")
