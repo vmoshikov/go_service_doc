@@ -10,14 +10,16 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from parsers.tree_sitter_helper import TreeSitterGoParser
+from parsers.path_filter import is_path_excluded
 from parsers.proto_struct_extractor import ProtoStructExtractor
+from parsers.tree_sitter_helper import TreeSitterGoParser
 from config import Config
 
 
 class APIParser:
-    def __init__(self, go_dir: Path, config_path: Optional[Path] = None, repo_name: Optional[str] = None, cache_dir: Optional[Path] = None):
+    def __init__(self, go_dir: Path, config_path: Optional[Path] = None, repo_name: Optional[str] = None, cache_dir: Optional[Path] = None, exclude_dirs: Optional[List[str]] = None):
         self.go_dir = go_dir
+        self.exclude_dirs = exclude_dirs or []
         self.structs = {}
         self.ts_parser = TreeSitterGoParser()
         self.use_tree_sitter = self.ts_parser.is_available()
@@ -49,7 +51,8 @@ class APIParser:
         go_files = list(self.go_dir.rglob('*.go'))
         go_files = [
             f for f in go_files
-            if not f.name.endswith('_test.go') and 'vendor' not in str(f)
+            if not f.name.endswith('_test.go')
+            and not is_path_excluded(str(f.relative_to(self.go_dir)), self.exclude_dirs)
         ]
         
         for go_file in go_files:
@@ -205,7 +208,8 @@ class APIParser:
         go_files = list(self.go_dir.rglob('*.go'))
         go_files = [
             f for f in go_files
-            if not f.name.endswith('_test.go') and 'vendor' not in str(f)
+            if not f.name.endswith('_test.go')
+            and not is_path_excluded(str(f.relative_to(self.go_dir)), self.exclude_dirs)
         ]
         
         # Pattern for gRPC service methods
@@ -303,7 +307,8 @@ class APIParser:
         go_files = list(self.go_dir.rglob('*.go'))
         go_files = [
             f for f in go_files
-            if not f.name.endswith('_test.go') and 'vendor' not in str(f)
+            if not f.name.endswith('_test.go')
+            and not is_path_excluded(str(f.relative_to(self.go_dir)), self.exclude_dirs)
         ]
         
         # Common HTTP router patterns

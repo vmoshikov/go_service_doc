@@ -7,6 +7,7 @@ the codebase and combining user-provided sections with auto-generated content.
 """
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -290,7 +291,19 @@ def main():
         print("Tip: Create proto config to link external proto repositories:")
         print(f"     {docs_dir / 'proto_conf.json'}")
         print("     See EXTERNAL_PROTO.md for details")
-    
+
+    # Exclusion dirs: load from docs/<repo_name>/exclude.json, else from rules
+    exclude_dirs: List[str] = []
+    exclude_json_path = docs_dir / "exclude.json"
+    if exclude_json_path.exists():
+        try:
+            exclude_cfg = json.loads(exclude_json_path.read_text(encoding="utf-8"))
+            exclude_dirs = exclude_cfg.get("exclude_dirs") or []
+        except Exception as e:
+            print(f"Warning: Could not load exclude.json: {e}")
+    if not exclude_dirs:
+        exclude_dirs = rules.get("exclude_dirs") or []
+
     # Initialize parsers
     if (not args.no_changelog) and args.changelog_only:
         # Generate changelog into docs/<repo>/CHANGELOG.md and exit.
@@ -303,22 +316,24 @@ def main():
         print(f"CHANGELOG generated successfully: {changelog_out}")
         return
 
-    function_parser = FunctionParser(go_dir)
+    function_parser = FunctionParser(go_dir, exclude_dirs=exclude_dirs)
     cache_dir = docs_dir / ".cache"
     api_parser = APIParser(
-        go_dir, 
+        go_dir,
         config_path=proto_config_path,
         repo_name=repo_name,
-        cache_dir=(cache_dir / "proto")
+        cache_dir=(cache_dir / "proto"),
+        exclude_dirs=exclude_dirs,
     ) if is_enabled(rules, "api") else None
-    test_parser = TestParser(go_dir) if is_enabled(rules, "tests") else None
+    test_parser = TestParser(go_dir, exclude_dirs=exclude_dirs) if is_enabled(rules, "tests") else None
     library_parser = LibraryParser(go_dir) if is_enabled(rules, "libraries") else None
     import_parser = ImportParser(
         go_dir,
         rules=rules,
         cache_dir=(cache_dir / "imports"),
+        exclude_dirs=exclude_dirs,
     ) if is_enabled(rules, "imports") else None
-    struct_parser = StructParser(go_dir) if is_enabled(rules, "structures") else None
+    struct_parser = StructParser(go_dir, exclude_dirs=exclude_dirs) if is_enabled(rules, "structures") else None
     
     # Parse codebase
     api_spec: Dict = {"grpc": [], "rest": [], "structs": {}}
@@ -341,9 +356,23 @@ def main():
         proto_structs = proto_extractor.get_structs_for_project(repo_name)
         if proto_structs:
             print(f"Found {len(proto_structs)} structs from proto repository")
+            # Get first external repo for source links (web URL + branch)
+            source_repo_url = None
+            source_branch = "main"
+            for repo_info in (proto_config.external_repos or {}).values():
+                if isinstance(repo_info, dict):
+                    source_repo_url = repo_info.get("url") or source_repo_url
+                    source_branch = repo_info.get("branch") or source_branch
+                    if source_repo_url:
+                        break
+            if source_repo_url and source_repo_url.endswith(".git"):
+                source_repo_url = source_repo_url[:-4]
             # Merge proto structs (proto takes precedence)
             for struct_name, struct_def in proto_structs.items():
-                struct_def['from_proto'] = True
+                struct_def["from_proto"] = True
+                if source_repo_url:
+                    struct_def["source_repo_url"] = source_repo_url
+                struct_def["source_branch"] = source_branch
                 api_spec["structs"][struct_name] = struct_def
     
     # Pass structs to function parser for struct type extraction

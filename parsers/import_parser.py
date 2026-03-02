@@ -15,8 +15,9 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from parsers.tree_sitter_helper import TreeSitterGoParser
+from parsers.path_filter import is_path_excluded
 from parsers.struct_parser import StructParser
+from parsers.tree_sitter_helper import TreeSitterGoParser
 
 
 def _is_stdlib_import(import_path: str) -> bool:
@@ -278,10 +279,11 @@ def _extract_local_types_from_dir(dir_path: Path) -> Dict[str, Dict]:
 
 
 class ImportParser:
-    def __init__(self, go_dir: Path, rules: Optional[Dict] = None, cache_dir: Optional[Path] = None):
+    def __init__(self, go_dir: Path, rules: Optional[Dict] = None, cache_dir: Optional[Path] = None, exclude_dirs: Optional[List[str]] = None):
         self.go_dir = go_dir
         self.rules = rules or {}
         self.cache_dir = cache_dir
+        self.exclude_dirs = exclude_dirs or []
 
     def parse(self) -> Dict:
         module_path = _read_module_path(self.go_dir)
@@ -290,7 +292,8 @@ class ImportParser:
         go_files = [
             f
             for f in go_files
-            if not f.name.endswith("_test.go") and "vendor" not in str(f)
+            if not f.name.endswith("_test.go")
+            and not is_path_excluded(str(f.relative_to(self.go_dir)), self.exclude_dirs)
         ]
 
         imports: Dict[str, Dict] = {}

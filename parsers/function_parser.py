@@ -9,12 +9,14 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from parsers.path_filter import is_path_excluded
 from parsers.tree_sitter_helper import TreeSitterGoParser
 
 
 class FunctionParser:
-    def __init__(self, go_dir: Path):
+    def __init__(self, go_dir: Path, exclude_dirs: Optional[List[str]] = None):
         self.go_dir = go_dir
+        self.exclude_dirs = exclude_dirs or []
         self.ts_parser = TreeSitterGoParser()
         self.use_tree_sitter = self.ts_parser.is_available()
         self.structs = {}  # Will be populated from API parser
@@ -64,11 +66,12 @@ class FunctionParser:
         """Parse all Go functions from the codebase."""
         functions = []
         
-        # Find all .go files (excluding test files and vendor)
+        # Find all .go files (excluding test files, vendor, and exclude_dirs)
         go_files = list(self.go_dir.rglob('*.go'))
         go_files = [
             f for f in go_files
-            if not f.name.endswith('_test.go') and 'vendor' not in str(f)
+            if not f.name.endswith('_test.go')
+            and not is_path_excluded(str(f.relative_to(self.go_dir)), self.exclude_dirs)
         ]
         
         for go_file in go_files:

@@ -7,21 +7,26 @@ Uses tree-sitter for accurate parsing, falls back to regex if unavailable.
 
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+from parsers.path_filter import is_path_excluded
 from parsers.tree_sitter_helper import TreeSitterGoParser
 
 
 class TestParser:
-    def __init__(self, go_dir: Path):
+    def __init__(self, go_dir: Path, exclude_dirs: Optional[List[str]] = None):
         self.go_dir = go_dir
+        self.exclude_dirs = exclude_dirs or []
         self.ts_parser = TreeSitterGoParser()
         self.use_tree_sitter = self.ts_parser.is_available()
-    
+
     def parse(self) -> Dict:
         """Parse all test files from the codebase."""
         test_files = list(self.go_dir.rglob('*_test.go'))
-        test_files = [f for f in test_files if 'vendor' not in str(f)]
+        test_files = [
+            f for f in test_files
+            if not is_path_excluded(str(f.relative_to(self.go_dir)), self.exclude_dirs)
+        ]
         
         tests = []
         benchmarks = []

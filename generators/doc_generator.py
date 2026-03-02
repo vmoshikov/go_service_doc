@@ -46,23 +46,36 @@ class DocumentationGenerator:
         self.structs = structs
     
     def _create_file_link(self, file_path: str, line: Optional[int] = None) -> str:
-        """Create a clickable link to a file with optional line number."""
-        label = f"{file_path}:{line}" if line else file_path
+        """Create a clickable link to a file with optional line number (main repo)."""
+        return self._create_source_link(file_path, line, base_url=None, branch=None)
 
-        # If we have a web URL, try to create a web link to source.
+    def _create_source_link(
+        self,
+        file_path: str,
+        line: Optional[int] = None,
+        base_url: Optional[str] = None,
+        branch: Optional[str] = None,
+    ) -> str:
+        """Create a clickable link to a file. Uses base_url/branch if set, else main repo."""
+        label = f"{file_path}:{line}" if line else file_path
+        if base_url and branch:
+            base = base_url.rstrip("/")
+            if "gitlab" in base or "/-/" in base:
+                url = f"{base}/-/blob/{branch}/{file_path}"
+            else:
+                url = f"{base}/blob/{branch}/{file_path}"
+            if line:
+                url += f"#L{line}"
+            return f"[`{label}`]({url})"
         if self.repo_web_url and self.repo_ref:
             base = self.repo_web_url.rstrip("/")
-            # GitLab commonly uses /-/blob/<ref>/<path>
             if "gitlab" in base or "/-/" in base:
                 url = f"{base}/-/blob/{self.repo_ref}/{file_path}"
             else:
-                # GitHub-style /blob/<ref>/<path>
                 url = f"{base}/blob/{self.repo_ref}/{file_path}"
             if line:
                 url += f"#L{line}"
             return f"[`{label}`]({url})"
-
-        # Default: do not create broken relative links in docs repo
         return f"`{label}`"
     
     def _create_anchor_link(self, text: str) -> str:
@@ -114,7 +127,8 @@ class DocumentationGenerator:
         component_info = None
         if is_enabled(self.rules, "diagrams"):
             print("Analyzing components and dependencies...")
-            component_analyzer = ComponentAnalyzer(self.go_dir)
+            exclude_dirs = self.rules.get("exclude_dirs") or []
+            component_analyzer = ComponentAnalyzer(self.go_dir, exclude_dirs=exclude_dirs)
             component_info = component_analyzer.analyze()
             self._generate_diagrams(component_info, api_spec)
 
@@ -312,6 +326,9 @@ class DocumentationGenerator:
                 ext_types = (external.get("types") or {}) if isinstance(external, dict) else {}
                 if (not local.get("is_local")) and ext_types and type_candidates:
                     content.append("### Определения типов из внешнего репозитория (best effort)\n\n")
+                    clone_url = (external.get("clone_url") or "").strip()
+                    ext_web_url = clone_url.rstrip("/").replace(".git", "") if clone_url else None
+                    ext_branch = "main"
                     for t in sorted(set(type_candidates)):
                         info = ext_types.get(t)
                         if not info:
@@ -321,8 +338,11 @@ class DocumentationGenerator:
                         src_line = info.get("line")
                         content.append(f"#### {t} ({kind})\n\n")
                         if src_file:
-                            label = f"{src_file}:{src_line}" if src_line else src_file
-                            content.append(f"*Определено в:* `{label}`\n\n")
+                            if ext_web_url:
+                                content.append(f"*Определено в:* {self._create_source_link(src_file, src_line, base_url=ext_web_url, branch=ext_branch)}\n\n")
+                            else:
+                                label = f"{src_file}:{src_line}" if src_line else src_file
+                                content.append(f"*Определено в:* `{label}`\n\n")
                         if kind == "struct":
                             fields = info.get("fields", []) or []
                             if fields:
@@ -376,7 +396,12 @@ class DocumentationGenerator:
                 line = info.get("line")
                 content.append(f"### {name} ({kind})\n\n")
                 if file_path:
-                    content.append(f"- 📍 *Определено в:* {self._create_file_link(file_path, line)}\n")
+                    if info.get("from_proto") and info.get("source_repo_url"):
+                        content.append(
+                            f"- 📍 *Определено в:* {self._create_source_link(file_path, line, base_url=info.get('source_repo_url'), branch=info.get('source_branch') or 'main')}\n"
+                        )
+                    else:
+                        content.append(f"- 📍 *Определено в:* {self._create_file_link(file_path, line)}\n")
                 if kind == "struct":
                     fields = info.get("fields", []) or []
                     if fields:
@@ -407,23 +432,39 @@ class DocumentationGenerator:
         content.extend(self._sections_nav(current_depth=1))
         (self.sections_dir / "structures.md").write_text("\n".join(content), encoding="utf-8")
     
-    def _get_struct_json_for_type(self, type_name: str) -> Optional[Dict]:
-        """Get JSON representation of a struct type."""
-        # Try exact match
+    def _get_struct_info_for_type(self, type_name: str) -> Optional[Dict]:
+        """Get full struct info dict (file, line, from_proto, source_repo_url, etc.) for linking."""
         if type_name in self.structs:
-            return self._struct_to_json(self.structs[type_name])
-        
-        # Try without package prefix
-        clean_name = type_name.split('.')[-1]
+            return self.structs[type_name]
+        clean_name = type_name.split(".")[-1]
         if clean_name in self.structs:
-            return self._struct_to_json(self.structs[clean_name])
-        
-        # Try searching by partial name
+            return self.structs[clean_name]
         for key in self.structs.keys():
             if key.endswith(clean_name) or clean_name in key:
-                return self._struct_to_json(self.structs[key])
-        
+                return self.structs[key]
         return None
+
+    def _get_struct_json_for_type(self, type_name: str) -> Optional[Dict]:
+        """Get JSON representation of a struct type."""
+        info = self._get_struct_info_for_type(type_name)
+        return self._struct_to_json(info) if info else None
+
+    def _format_type_source_link(self, type_name: str) -> str:
+        """Format 'Определено в: link' for a type, or empty string if no info."""
+        info = self._get_struct_info_for_type(type_name)
+        if not info:
+            return ""
+        file_path = info.get("file")
+        if not file_path:
+            return ""
+        line = info.get("line")
+        if info.get("from_proto") and info.get("source_repo_url"):
+            return self._create_source_link(
+                file_path, line,
+                base_url=info.get("source_repo_url"),
+                branch=info.get("source_branch") or "main",
+            )
+        return self._create_file_link(file_path, line)
     
     def _struct_to_json(self, struct_info: Dict) -> Dict:
         """Convert struct info to JSON representation."""
@@ -475,18 +516,22 @@ class DocumentationGenerator:
         return {}
     
     def _generate_functions(self, functions: List[Dict], api_spec: Dict):
-        """Generate functions index + per-top-level-directory files."""
+        """Generate functions index + per-directory files (grouped by parent dir of each file)."""
         if not functions:
             content = ["# Функции\n\nФункции не найдены.\n"]
             (self.sections_dir / "functions.md").write_text("\n".join(content), encoding="utf-8")
             return
 
-        # Group by first-level directory (top-level)
+        # Group by parent directory of the file (deepest level: one group per dir containing .go files)
         grouped: Dict[str, List[Dict]] = {}
         for func in functions:
             fp = func.get("file", "")
-            top = fp.split("/", 1)[0] if "/" in fp else "."
-            grouped.setdefault(top, []).append(func)
+            # Parent dir of file: "cmd/server/main.go" -> "cmd/server", "main.go" -> "."
+            if "/" in fp:
+                dir_key = fp.rsplit("/", 1)[0]
+            else:
+                dir_key = "."
+            grouped.setdefault(dir_key, []).append(func)
 
         functions_dir = self.sections_dir / "functions"
         functions_dir.mkdir(parents=True, exist_ok=True)
@@ -502,7 +547,7 @@ class DocumentationGenerator:
             ln = line or 0
             return f"{name} ({file_path}:{ln})"
 
-        # Prepare per-top-level directory pages
+        # Prepare per-directory pages (one page per directory that contains .go files)
         dir_items: List[Dict[str, object]] = []
         for top in sorted(grouped.keys()):
             title = "root" if top == "." else top
@@ -543,7 +588,7 @@ class DocumentationGenerator:
             page: List[str] = [f"# Функции: {title}\n\n"]
             page.extend(nav_block(str(prev_rel) if prev_rel else None, str(next_rel) if next_rel else None))
             
-            # Group by file within this top-level directory
+            # Group by file within this directory
             by_file: Dict[str, List[Dict]] = {}
             for f in item["functions"]:  # type: ignore[index]
                 by_file.setdefault(f["file"], []).append(f)
@@ -605,19 +650,29 @@ class DocumentationGenerator:
                     struct_types = func.get("struct_types", {}) or {}
                     if struct_types.get("request") or struct_types.get("response"):
                         for struct_type in struct_types.get("request", []):
+                            page.append(f"**Тип запроса:** {struct_type}\n\n")
                             struct_json = self._get_struct_json_for_type(struct_type)
                             if struct_json:
-                                page.append(f"**Тип запроса:** {struct_type}\n\n")
                                 page.append("```json")
                                 page.append(json.dumps(struct_json, indent=2, ensure_ascii=False))
                                 page.append("```\n\n")
+                                src_link = self._format_type_source_link(struct_type)
+                                if src_link:
+                                    page.append(f"*Определено в:* {src_link}\n\n")
+                            else:
+                                page.append("*Определение не найдено в проекте (тип может быть во внешнем proto).*\n\n")
                         for struct_type in struct_types.get("response", []):
+                            page.append(f"**Тип ответа:** {struct_type}\n\n")
                             struct_json = self._get_struct_json_for_type(struct_type)
                             if struct_json:
-                                page.append(f"**Тип ответа:** {struct_type}\n\n")
                                 page.append("```json")
                                 page.append(json.dumps(struct_json, indent=2, ensure_ascii=False))
                                 page.append("```\n\n")
+                                src_link = self._format_type_source_link(struct_type)
+                                if src_link:
+                                    page.append(f"*Определено в:* {src_link}\n\n")
+                            else:
+                                page.append("*Определение не найдено в проекте (тип может быть во внешнем proto).*\n\n")
 
                     page.append(f"📍 *Расположение:* {self._create_file_link(file_path, func.get('line'))}\n\n")
 
@@ -631,7 +686,7 @@ class DocumentationGenerator:
         # 2) Write index file (sections/functions.md)
         index: List[str] = ["# Функции\n\n"]
         index.extend(self._sections_nav(current_depth=1))
-        index.append("## Директории верхнего уровня\n\n")
+        index.append("## Директории (по месту расположения файлов)\n\n")
         index.append("- [К оглавлению документации](../README.md)\n\n")
         for item in dir_items:
             index.append(f"- 📁 [{item['dir']}]({item['rel_path']})\n")
@@ -714,24 +769,31 @@ class DocumentationGenerator:
                 # Show struct types if present
                 struct_types = func.get('struct_types', {})
                 if struct_types.get('request') or struct_types.get('response'):
-                    # Request structs
                     for struct_type in struct_types.get('request', []):
+                        content.append(f"**Тип запроса:** {struct_type}\n\n")
                         struct_json = self._get_struct_json_for_type(struct_type)
                         if struct_json:
-                            content.append(f"**Тип запроса: `{struct_type}`**\n\n")
                             content.append("```json")
                             content.append(json.dumps(struct_json, indent=2))
                             content.append("```\n\n")
-                    
-                    # Response structs
+                            src_link = self._format_type_source_link(struct_type)
+                            if src_link:
+                                content.append(f"*Определено в:* {src_link}\n\n")
+                        else:
+                            content.append("*Определение не найдено в проекте (тип может быть во внешнем proto).*\n\n")
                     for struct_type in struct_types.get('response', []):
+                        content.append(f"**Тип ответа:** {struct_type}\n\n")
                         struct_json = self._get_struct_json_for_type(struct_type)
                         if struct_json:
-                            content.append(f"**Тип ответа: `{struct_type}`**\n\n")
                             content.append("```json")
                             content.append(json.dumps(struct_json, indent=2))
                             content.append("```\n\n")
-                
+                            src_link = self._format_type_source_link(struct_type)
+                            if src_link:
+                                content.append(f"*Определено в:* {src_link}\n\n")
+                        else:
+                            content.append("*Определение не найдено в проекте (тип может быть во внешнем proto).*\n\n")
+
                 # Location link
                 if dir_key == '.':
                     full_file_path = file_name
@@ -901,39 +963,51 @@ class DocumentationGenerator:
                     if description:
                         content.append(f"{description}\n\n")
                     
-                    # Request type with external link if available
                     request_type = endpoint.get('request_type', '')
-                    request_display = f"**Тип запроса:** `{request_type}`"
+                    content.append(f"**Тип запроса:** `{request_type}`")
                     if endpoint.get('proto_link'):
-                        proto_link = endpoint['proto_link']
-                        request_display += f" - [Открыть proto]({proto_link})"
-                    content.append(f"{request_display}\n")
-                    
-                    # Response type with external link if available
+                        content.append(f" - [Открыть proto]({endpoint['proto_link']})")
+                    content.append("\n")
+                    req_src = self._format_type_source_link(request_type)
+                    if req_src:
+                        content.append(f"*Тип запроса определён в:* {req_src}\n")
+                    if not endpoint.get('request_json'):
+                        content.append("*Определение типа не найдено в проекте.*\n")
+                    content.append("\n")
+
                     response_type = endpoint.get('response_type', '')
-                    response_display = f"**Тип ответа:** `{response_type}`"
+                    content.append(f"**Тип ответа:** `{response_type}`")
                     if endpoint.get('proto_link'):
-                        response_display += f" - [Открыть proto]({endpoint['proto_link']})"
-                    content.append(f"{response_display}\n\n")
-                    
-                    # Add proto repository info if available
+                        content.append(f" - [Открыть proto]({endpoint['proto_link']})")
+                    content.append("\n")
+                    resp_src = self._format_type_source_link(response_type)
+                    if resp_src:
+                        content.append(f"*Тип ответа определён в:* {resp_src}\n")
+                    if not endpoint.get('response_json'):
+                        content.append("*Определение типа не найдено в проекте.*\n")
+                    content.append("\n")
+
                     if endpoint.get('proto_repo'):
                         content.append(f"*Proto-определения из: {endpoint['proto_repo']}*\n\n")
-                    
+
                     if endpoint['request_json']:
                         content.append("**Запрос (JSON):**\n")
                         content.append("```json")
                         content.append(json.dumps(endpoint['request_json'], indent=2))
                         content.append("```\n\n")
-                    
+                        if req_src:
+                            content.append(f"*Определено в:* {req_src}\n\n")
+
                     if endpoint['response_json']:
                         content.append("**Ответ (JSON):**\n")
                         content.append("```json")
                         content.append(json.dumps(endpoint['response_json'], indent=2))
                         content.append("```\n\n")
-                    
+                        if resp_src:
+                            content.append(f"*Определено в:* {resp_src}\n\n")
+
                     file_link = self._create_file_link(endpoint['file'])
-                    content.append(f"📍 *Определено в: {file_link}*\n\n")
+                    content.append(f"📍 *Обработчик определён в: {file_link}*\n\n")
         
         # REST endpoints grouped by file
         if api_spec.get('rest'):

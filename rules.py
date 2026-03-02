@@ -17,6 +17,8 @@ from typing import Any, Dict, Optional, Tuple
 
 DEFAULT_RULES: Dict[str, Any] = {
     "language": "ru",
+    # Directories to exclude from analysis (paths relative to repo root). Example: ["vendor", "third_party", "generated"]
+    "exclude_dirs": ["vendor"],
     "features": {
         # If true, major sections in main README are rendered as menus only (links to detailed files)
         "thin_readme": True,

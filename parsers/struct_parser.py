@@ -11,21 +11,27 @@ Uses tree-sitter when available, falls back to regex for structs.
 
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+from parsers.path_filter import is_path_excluded
 from parsers.tree_sitter_helper import TreeSitterGoParser
 
 
 class StructParser:
-    def __init__(self, go_dir: Path):
+    def __init__(self, go_dir: Path, exclude_dirs: Optional[List[str]] = None):
         self.go_dir = go_dir
+        self.exclude_dirs = exclude_dirs or []
         self.structs: Dict[str, Dict] = {}
         self.ts_parser = TreeSitterGoParser()
         self.use_tree_sitter = self.ts_parser.is_available()
 
     def parse(self) -> Dict[str, Dict]:
         go_files = list(self.go_dir.rglob("*.go"))
-        go_files = [f for f in go_files if not f.name.endswith("_test.go") and "vendor" not in str(f)]
+        go_files = [
+            f for f in go_files
+            if not f.name.endswith("_test.go")
+            and not is_path_excluded(str(f.relative_to(self.go_dir)), self.exclude_dirs)
+        ]
         for go_file in go_files:
             if self.use_tree_sitter:
                 self._parse_file_tree_sitter(go_file)
