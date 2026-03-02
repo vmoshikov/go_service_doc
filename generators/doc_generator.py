@@ -15,6 +15,16 @@ from parsers.component_analyzer import ComponentAnalyzer
 from rules import is_enabled
 
 
+def _escape_yaml_str(s: str) -> str:
+    """Escape string for YAML value (quotes if needed)."""
+    if not s:
+        return '""'
+    s = str(s).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    if ":" in s or "#" in s or s.strip() != s:
+        return '"' + s + '"'
+    return s
+
+
 class DocumentationGenerator:
     def __init__(
         self,
@@ -44,6 +54,32 @@ class DocumentationGenerator:
     def set_structs(self, structs: Dict):
         """Set struct definitions for JSON generation."""
         self.structs = structs
+
+    def _ai_frontmatter(self, title: str, doc_type: str, chunk_boundary: str = "h3", **extra: str) -> str:
+        """YAML frontmatter for AI-ready chunking (vector DB). No PyYAML dependency."""
+        lines = [
+            "title: " + _escape_yaml_str(title),
+            "type: " + _escape_yaml_str(doc_type),
+            "repo: " + _escape_yaml_str(self.repo_name or "unknown"),
+            "language: ru",
+            "chunk_boundary: " + chunk_boundary,
+        ]
+        for k, v in (extra or {}).items():
+            if v is not None and str(v).strip():
+                lines.append(f"{k}: {_escape_yaml_str(str(v))}")
+        return "---\n" + "\n".join(lines) + "\n---\n\n"
+
+    def _ai_chunk_sep(self) -> str:
+        """Separator between logical chunks for vector DB splitting."""
+        return "\n---\n\n"
+
+    def _ai_entity_summary(self, kind: str, **kwargs: str) -> str:
+        """One-line summary for an entity (function/struct/endpoint) for dense retrieval."""
+        parts = [f"[{kind}]"]
+        for k, v in (kwargs or {}).items():
+            if v is not None and str(v).strip():
+                parts.append(f"{k}: {v}")
+        return " ".join(parts) + "\n\n"
     
     def _create_file_link(self, file_path: str, line: Optional[int] = None) -> str:
         """Create a clickable link to a file with optional line number (main repo)."""
@@ -207,7 +243,10 @@ class DocumentationGenerator:
 
     def _generate_imports(self, imports: Dict):
         """Generate imports.md (imports overview)."""
-        content = ["# Импорты\n\n"]
+        content = [
+            self._ai_frontmatter("Импорты", "imports", chunk_boundary="h3"),
+            "# Импорты\n\n",
+        ]
         content.extend(self._sections_nav(current_depth=1))
 
         module = imports.get("module") if isinstance(imports, dict) else None
@@ -247,7 +286,8 @@ class DocumentationGenerator:
                 files = imp.get("files", []) or []
                 local = imp.get("local", {}) or {}
                 external = imp.get("external", {}) or {}
-
+                content.append(self._ai_chunk_sep())
+                content.append(self._ai_entity_summary("import", path=path, type="stdlib" if is_stdlib else ("local" if local.get("is_local") else "external")))
                 content.append(f"### {path}\n\n")
                 content.append(
                     f"- **Тип:** {'stdlib' if is_stdlib else ('local' if local.get('is_local') else 'external')}\n"
@@ -366,7 +406,10 @@ class DocumentationGenerator:
 
     def _generate_structures(self, structs: Dict):
         """Generate structures.md (all types/structs)."""
-        content = ["# Структуры и типы\n\n"]
+        content = [
+            self._ai_frontmatter("Структуры и типы", "structures", chunk_boundary="h3"),
+            "# Структуры и типы\n\n",
+        ]
         content.extend(self._sections_nav(current_depth=1))
 
         if not structs:
@@ -391,9 +434,12 @@ class DocumentationGenerator:
             title = "root" if top == "." else top
             content.append(f"## {title}\n\n")
             for name, info in sorted(grouped[top], key=lambda x: x[0]):
+                content.append(self._ai_chunk_sep())
                 kind = info.get("kind", "type")
                 file_path = info.get("file")
                 line = info.get("line")
+                loc = f"{file_path}:{line}" if file_path and line else (file_path or "—")
+                content.append(self._ai_entity_summary("structure", name=name, kind=kind, location=loc))
                 content.append(f"### {name} ({kind})\n\n")
                 if file_path:
                     if info.get("from_proto") and info.get("source_repo_url"):
@@ -518,7 +564,11 @@ class DocumentationGenerator:
     def _generate_functions(self, functions: List[Dict], api_spec: Dict):
         """Generate functions index + per-directory files (grouped by parent dir of each file)."""
         if not functions:
-            content = ["# Функции\n\nФункции не найдены.\n"]
+            content = [
+                self._ai_frontmatter("Функции", "functions_index", chunk_boundary="h2"),
+                "# Функции\n\n",
+                "Функции не найдены.\n",
+            ]
             (self.sections_dir / "functions.md").write_text("\n".join(content), encoding="utf-8")
             return
 
@@ -600,7 +650,9 @@ class DocumentationGenerator:
             prev_rel = dir_items[i - 1]["file_name"] if i > 0 else None
             next_rel = dir_items[i + 1]["file_name"] if i + 1 < len(dir_items) else None
 
-            page: List[str] = [f"# Функции: {title}\n\n"]
+            page_title = f"Функции: {title}"
+            page = [self._ai_frontmatter(page_title, "functions", chunk_boundary="h3", group=title)]
+            page.append(f"# {page_title}\n\n")
             page.extend(nav_block(str(prev_rel) if prev_rel else None, str(next_rel) if next_rel else None))
             
             # Group by file within this directory
@@ -634,9 +686,19 @@ class DocumentationGenerator:
                         page.append(f"- 🔗 [{func_name}](#{heading_anchor})\n")
                 page.append("\n</details>\n\n")
 
-                # Function details
-                for func in sorted(by_file[file_path], key=lambda x: (x.get("name", ""), x.get("line", 0))):
+                # Function details (each block = one chunk for vector DB)
+                for idx, func in enumerate(sorted(by_file[file_path], key=lambda x: (x.get("name", ""), x.get("line", 0)))):
+                    if idx > 0:
+                        page.append(self._ai_chunk_sep())
                     heading = func_heading(file_path, func.get("line"), func.get("name", ""))
+                    desc_short = (func.get("comment") or "").strip()[:120] or "—"
+                    page.append(self._ai_entity_summary(
+                        "function",
+                        name=func.get("name", ""),
+                        file=f"{file_path}:{func.get('line', 0)}",
+                        returns_error="да" if func.get("returns_error") else "нет",
+                        description=desc_short,
+                    ))
                     page.append(f"### {heading}\n\n")
 
                     description = func.get("comment", "").strip()
@@ -714,7 +776,10 @@ class DocumentationGenerator:
             out_path.write_text("\n".join(page), encoding="utf-8")
 
         # 2) Write index file (sections/functions.md)
-        index: List[str] = ["# Функции\n\n"]
+        index: List[str] = [
+            self._ai_frontmatter("Функции", "functions_index", chunk_boundary="h2"),
+            "# Функции\n\n",
+        ]
         index.extend(self._sections_nav(current_depth=1))
         if group_depth > 0:
             index.append(f"## Группировка по глубине (уровней: {group_depth})\n\n")
@@ -935,7 +1000,10 @@ class DocumentationGenerator:
     
     def _generate_api_spec(self, api_spec: Dict):
         """Generate api.md"""
-        content = ["# Спецификация API\n\n"]
+        content = [
+            self._ai_frontmatter("Спецификация API", "api", chunk_boundary="h4"),
+            "# Спецификация API\n\n",
+        ]
         content.extend(self._sections_nav(current_depth=1))
         
         # Collect all files with endpoints
@@ -980,8 +1048,16 @@ class DocumentationGenerator:
                     content.append(f"- 🔗 [{method}](#{method_anchor})\n")
                 content.append("\n</details>\n\n")
                 
-                # Endpoint details
+                # Endpoint details (one chunk per endpoint)
                 for endpoint in sorted(endpoints_list, key=lambda x: x.get('method', '')):
+                    content.append(self._ai_chunk_sep())
+                    content.append(self._ai_entity_summary(
+                        "grpc",
+                        method=endpoint.get("method", ""),
+                        request=endpoint.get("request_type", ""),
+                        response=endpoint.get("response_type", ""),
+                        file=endpoint.get("file", ""),
+                    ))
                     content.append(f"#### {endpoint['method']}\n\n")
                     
                     # Use existing comment or generate description
@@ -1062,10 +1138,12 @@ class DocumentationGenerator:
                     content.append(f"- 🔗 [{endpoint_title}](#{endpoint_anchor})\n")
                 content.append("\n</details>\n\n")
                 
-                # Endpoint details
+                # Endpoint details (one chunk per endpoint)
                 for endpoint in sorted(endpoints_list, key=lambda x: (x.get('method', ''), x.get('path', ''))):
                     method = endpoint['method']
                     path = endpoint['path']
+                    content.append(self._ai_chunk_sep())
+                    content.append(self._ai_entity_summary("rest", method=method, path=path, handler=endpoint.get("handler", ""), file=endpoint.get("file", "")))
                     content.append(f"#### {method} {path}\n\n")
                     
                     # Use existing comment or generate description
@@ -1096,7 +1174,10 @@ class DocumentationGenerator:
     
     def _generate_tests(self, tests: Dict):
         """Generate tests.md"""
-        content = ["# Тестирование\n\n"]
+        content = [
+            self._ai_frontmatter("Тестирование", "tests", chunk_boundary="h4"),
+            "# Тестирование\n\n",
+        ]
         content.extend(self._sections_nav(current_depth=1))
         
         # Collect all files with tests
@@ -1151,8 +1232,10 @@ class DocumentationGenerator:
                         content.append(f"- 🔗 [{test_name}](#{test_anchor})\n")
                 content.append("\n</details>\n\n")
                 
-                # Test details
+                # Test details (one chunk per test)
                 for test in sorted(tests_list, key=lambda x: (x.get('name', ''), x.get('line', 0))):
+                    content.append(self._ai_chunk_sep())
+                    content.append(self._ai_entity_summary("test", name=test.get("name", ""), file=f"{test.get('file', '')}:{test.get('line', 0)}", description=(test.get("comment") or "")[:80]))
                     content.append(f"#### {test['name']}\n\n")
                     if test['comment']:
                         content.append(f"{test['comment']}\n\n")
@@ -1186,8 +1269,10 @@ class DocumentationGenerator:
                         content.append(f"- 🔗 [{bench_name}](#{bench_anchor})\n")
                 content.append("\n</details>\n\n")
                 
-                # Benchmark details
+                # Benchmark details (one chunk per benchmark)
                 for bench in sorted(benchmarks_list, key=lambda x: (x.get('name', ''), x.get('line', 0))):
+                    content.append(self._ai_chunk_sep())
+                    content.append(self._ai_entity_summary("benchmark", name=bench.get("name", ""), file=f"{bench.get('file', '')}:{bench.get('line', 0)}"))
                     content.append(f"#### {bench['name']}\n\n")
                     if bench['comment']:
                         content.append(f"{bench['comment']}\n\n")
@@ -1216,8 +1301,10 @@ class DocumentationGenerator:
                         content.append(f"- 🔗 [{example_name}](#{example_anchor})\n")
                 content.append("\n</details>\n\n")
                 
-                # Example details
+                # Example details (one chunk per example)
                 for example in sorted(examples_list, key=lambda x: (x.get('name', ''), x.get('line', 0))):
+                    content.append(self._ai_chunk_sep())
+                    content.append(self._ai_entity_summary("example", name=example.get("name", ""), file=f"{example.get('file', '')}:{example.get('line', 0)}"))
                     content.append(f"#### {example['name']}\n\n")
                     if example['comment']:
                         content.append(f"{example['comment']}\n\n")
@@ -1234,7 +1321,10 @@ class DocumentationGenerator:
     
     def _generate_libraries(self, libraries: Dict):
         """Generate libraries.md"""
-        content = ["# Используемые библиотеки\n\n"]
+        content = [
+            self._ai_frontmatter("Используемые библиотеки", "libraries", chunk_boundary="h2"),
+            "# Используемые библиотеки\n\n",
+        ]
         content.extend(self._sections_nav(current_depth=1))
         
         if libraries.get('module'):
@@ -1340,6 +1430,7 @@ class DocumentationGenerator:
             readme_parts.append("\n---\n\n")
 
         readme_parts: List[str] = []
+        readme_parts.append(self._ai_frontmatter("Документация сервиса", "readme", chunk_boundary="h2"))
         readme_parts.append("# Документация сервиса\n")
         readme_parts.append("Документация автоматически сгенерирована из Go‑кода.\n\n")
 

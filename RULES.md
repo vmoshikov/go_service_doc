@@ -91,6 +91,11 @@
   - `changelog.branch_prefix_to_category` — маппинг префикса ветки → категория: `feature/` → Добавлено, `fix/` → Исправлено, `remove/` → Удалено и т.д.
   - `changelog.task_tracker_url` — URL трекера для ссылок (иначе JIRA_BASE_URL из env)
 
+- **Формат AI-ready для векторной БД (чанкование)**
+  - Все сгенерированные Markdown-файлы содержат **YAML frontmatter** (`---` в начале): `title`, `type`, `repo`, `language`, `chunk_boundary` (уровень заголовка для разбиения: h2/h3/h4).
+  - Между сущностями (функция, структура, эндпоинт API, тест и т.д.) вставлен разделитель **`---`** для разбиения на чанки.
+  - В начале каждого чанка выводится **однострочное описание** сущности (`[function] name: X file: path returns_error: да description: ...`) для плотного поиска при RAG.
+
 ```json
 {
   "language": "ru",
