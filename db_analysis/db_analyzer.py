@@ -21,15 +21,18 @@ def load_schema(config_path: Path) -> list[dict]:
         return json.load(f)
 
 
-def get_db_connection(
+def get_db_engine(
     db_url: str,
     ssl_cert: str | None = None,
     ssl_key: str | None = None,
     ssl_rootcert: str | None = None,
 ) -> Any:
-    """Подключение к PostgreSQL через psycopg2: mTLS + логин/пароль из URL."""
-    import psycopg2
+    """SQLAlchemy engine для PostgreSQL: mTLS + логин/пароль из URL."""
+    from sqlalchemy import create_engine
     from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+    if db_url.startswith("postgresql://") and not db_url.startswith("postgresql+psycopg2://"):
+        db_url = db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
     if ssl_cert or ssl_key or ssl_rootcert:
         parsed = urlparse(db_url)
@@ -44,10 +47,10 @@ def get_db_connection(
         new_query = urlencode(query, doseq=True)
         db_url = urlunparse(parsed._replace(query=new_query))
 
-    return psycopg2.connect(db_url)
+    return create_engine(db_url)
 
 
-def fetch_table(conn: Any, schema: str, table: str, columns: str, where: str | None) -> pd.DataFrame:
+def fetch_table(engine: Any, schema: str, table: str, columns: str, where: str | None) -> pd.DataFrame:
     """Чтение таблицы в DataFrame."""
     cols = columns.split(",")
     cols_str = ", ".join(c.strip() for c in cols)
@@ -55,10 +58,10 @@ def fetch_table(conn: Any, schema: str, table: str, columns: str, where: str | N
     sql = f"SELECT {cols_str} FROM {full_table}"
     if where:
         sql += f" WHERE {where}"
-    return pd.read_sql(sql, conn)
+    return pd.read_sql(sql, engine)
 
 
-def load_all_tables(conn: Any, schema_config: list[dict]) -> dict[str, pd.DataFrame]:
+def load_all_tables(engine: Any, schema_config: list[dict]) -> dict[str, pd.DataFrame]:
     """Загрузка всех таблиц из конфигурации."""
     tables = {}
     for item in schema_config:
@@ -68,7 +71,7 @@ def load_all_tables(conn: Any, schema_config: list[dict]) -> dict[str, pd.DataFr
         where = item.get("where")
         key = f"{schema}.{table}"
         try:
-            tables[key] = fetch_table(conn, schema, table, columns, where)
+            tables[key] = fetch_table(engine, schema, table, columns, where)
         except Exception as e:
             print(f"Warning: could not load {key}: {e}")
             tables[key] = pd.DataFrame()
@@ -402,11 +405,11 @@ def main():
         ssl_cert = _resolve_cert(args.ssl_cert, base / "certs" / "client.pem")
         ssl_key = _resolve_cert(args.ssl_key, base / "certs" / "client-key.pem")
         ssl_rootcert = _resolve_cert(args.ssl_rootcert, base / "certs" / "ca.pem")
-        conn = get_db_connection(db_url, ssl_cert, ssl_key, ssl_rootcert)
+        engine = get_db_engine(db_url, ssl_cert, ssl_key, ssl_rootcert)
         try:
-            tables = load_all_tables(conn, schema_config)
+            tables = load_all_tables(engine, schema_config)
         finally:
-            conn.close()
+            engine.dispose()
     else:
         print("Error: --db-url or DATABASE_URL required (use --dry-run for empty reports)")
         return 1
