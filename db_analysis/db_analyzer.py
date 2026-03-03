@@ -3,7 +3,7 @@
 KaaS DB Analyzer — анализ данных БД и генерация HTML-отчётов.
 
 Подключение: psycopg2 + mTLS + логин/пароль (PostgreSQL).
-Дашборды: Кластеры и ресурсы, Операции и SLO, Ошибки, Конфигурация, География, Тренды потребления.
+Единый отчёт: report.html с TOC и SQL под каждым графиком.
 """
 
 import argparse
@@ -13,6 +13,32 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+# SQL-шаблоны для отчёта (period_days подставляется)
+def _sql(period_days: int) -> dict:
+    pd_str = str(period_days)
+    return {
+        "cr_usage": f"""-- conf.custom_resource: resource_type + version, deleted=False
+SELECT resource_type, version, COUNT(*) AS cluster_count, COUNT(DISTINCT cluster_uid) AS clusters
+FROM conf.custom_resource
+WHERE (deleted IS NULL OR deleted = false)
+  AND modify_ts > now() - interval '{pd_str} days'
+GROUP BY resource_type, version
+ORDER BY cluster_count DESC;""",
+        "clusters_status": f"""SELECT status, COUNT(*) AS cnt FROM state.cluster_consumption
+WHERE update_ts > now() - interval '{pd_str} days' GROUP BY status;""",
+        "nodes_status": f"""SELECT status, COUNT(*) AS cnt FROM state.node_consumption
+WHERE update_ts > now() - interval '{pd_str} days' GROUP BY status;""",
+        "k8s_version": f"""SELECT k8s_version, COUNT(*) FROM state.cluster_consumption
+WHERE update_ts > now() - interval '{pd_str} days' GROUP BY k8s_version;""",
+        "ops_state": f"""SELECT state, COUNT(*) FROM operation_v2.operations
+WHERE state_dt > now() - interval '{pd_str} days' GROUP BY state;""",
+        "ops_timeline": f"""SELECT DATE(state_dt) AS day,
+  SUM(CASE WHEN LOWER(state) IN ('success','completed','done') THEN 1 ELSE 0 END) AS success,
+  SUM(CASE WHEN LOWER(state) NOT IN ('success','completed','done') THEN 1 ELSE 0 END) AS failed
+FROM operation_v2.operations WHERE state_dt > now() - interval '{pd_str} days'
+GROUP BY DATE(state_dt) ORDER BY day;""",
+    }
 
 
 def load_schema(config_path: Path) -> list[dict]:
@@ -90,7 +116,6 @@ def load_all_tables(
 
 
 def html_header(title: str) -> str:
-    """HTML-заголовок с Chart.js."""
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -102,6 +127,7 @@ def html_header(title: str) -> str:
         body {{ font-family: system-ui, sans-serif; margin: 2rem; background: #f5f5f5; }}
         h1 {{ color: #333; }}
         h2 {{ color: #555; margin-top: 2rem; }}
+        h3 {{ color: #666; margin-top: 1.5rem; }}
         .chart-container {{ position: relative; height: 300px; max-width: 800px; margin: 1rem 0; }}
         table {{ border-collapse: collapse; width: 100%; background: white; border-radius: 8px; overflow: hidden; }}
         th, td {{ padding: 8px 12px; text-align: left; border-bottom: 1px solid #eee; }}
@@ -112,6 +138,13 @@ def html_header(title: str) -> str:
         .kpi-card {{ background: white; padding: 1rem; border-radius: 8px; text-align: center; }}
         .kpi-card .value {{ font-size: 1.5rem; font-weight: bold; }}
         .kpi-card .label {{ font-size: 0.85rem; color: #666; }}
+        .sql-collapse {{ margin: 0.5rem 0 1.5rem 0; }}
+        .sql-collapse summary {{ cursor: pointer; color: #666; font-size: 0.9rem; }}
+        .sql-collapse pre {{ background: #f8f8f8; padding: 0.75rem; border-radius: 4px; overflow-x: auto; font-size: 0.8rem; margin: 0.25rem 0 0 0; }}
+        .section {{ margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid #ddd; }}
+        .toc {{ background: white; padding: 1rem; border-radius: 8px; margin-bottom: 2rem; }}
+        .toc a {{ color: #1976d2; text-decoration: none; }}
+        .toc a:hover {{ text-decoration: underline; }}
     </style>
 </head>
 <body>
@@ -123,513 +156,246 @@ def html_footer() -> str:
 
 
 PALE_PALETTE = [
-    "rgba(179, 229, 252, 0.75)",  # light blue
-    "rgba(200, 230, 201, 0.75)",  # light green
-    "rgba(255, 236, 179, 0.75)",  # light amber
-    "rgba(248, 187, 217, 0.75)",  # light pink
-    "rgba(225, 190, 231, 0.75)",  # light purple
-    "rgba(178, 223, 219, 0.75)",  # teal
-    "rgba(215, 204, 200, 0.75)",  # warm grey
-    "rgba(207, 216, 220, 0.75)",  # blue grey
+    "rgba(179, 229, 252, 0.75)", "rgba(200, 230, 201, 0.75)", "rgba(255, 236, 179, 0.75)",
+    "rgba(248, 187, 217, 0.75)", "rgba(225, 190, 231, 0.75)", "rgba(178, 223, 219, 0.75)",
+    "rgba(215, 204, 200, 0.75)", "rgba(207, 216, 220, 0.75)",
 ]
 
 
-def render_chart(chart_id: str, chart_type: str, labels: list, data: list, title: str) -> str:
-    """Генерация HTML + JS для Chart.js с бледной палитрой."""
+def sql_collapse(sql: str) -> str:
+    escaped = sql.replace("<", "&lt;").replace(">", "&gt;")
+    return f'<details class="sql-collapse"><summary>Показать SQL</summary><pre>{escaped}</pre></details>'
+
+
+def render_chart(chart_id: str, chart_type: str, labels: list, data: list, title: str, sql: str | None = None) -> str:
     n = len(data)
     colors = [PALE_PALETTE[i % len(PALE_PALETTE)] for i in range(n)]
-    return f"""
-<div class="chart-container">
-    <canvas id="{chart_id}"></canvas>
-</div>
-<script>
-(function() {{
+    labels_js = json.dumps(labels)
+    data_js = json.dumps(data)
+    colors_js = json.dumps(colors)
+    out = f"""<div class="chart-container"><canvas id="{chart_id}"></canvas></div>
+<script>(function(){{
     const ctx = document.getElementById('{chart_id}');
     new Chart(ctx, {{
         type: '{chart_type}',
-        data: {{
-            labels: {json.dumps(labels)},
-            datasets: [{{ label: '{title}', data: {json.dumps(data)}, backgroundColor: {json.dumps(colors)} }}]
-        }},
+        data: {{ labels: {labels_js}, datasets: [{{ label: '{title}', data: {data_js}, backgroundColor: {colors_js} }}] }},
         options: {{ responsive: true, maintainAspectRatio: false }}
     }});
-}})();
-</script>
-"""
+}})();</script>"""
+    return out + (sql_collapse(sql) if sql else "")
 
 
-def render_chart_multi(
-    chart_id: str,
-    chart_type: str,
-    labels: list,
-    datasets: list[tuple[str, list]],
-) -> str:
-    """Генерация Chart.js с несколькими наборами данных (stacked bar/line)."""
+def render_chart_multi(chart_id: str, chart_type: str, labels: list, datasets: list[tuple[str, list]], sql: str | None = None) -> str:
     colors = PALE_PALETTE[: len(datasets)]
-    ds_json = [
-        {"label": name, "data": data, "backgroundColor": color}
-        for (name, data), color in zip(datasets, colors)
-    ]
-    return f"""
-<div class="chart-container">
-    <canvas id="{chart_id}"></canvas>
-</div>
-<script>
-(function() {{
+    ds_json = [{"label": n, "data": d, "backgroundColor": c} for (n, d), c in zip(datasets, colors)]
+    labels_js = json.dumps(labels)
+    ds_js = json.dumps(ds_json)
+    out = f"""<div class="chart-container"><canvas id="{chart_id}"></canvas></div>
+<script>(function(){{
     const ctx = document.getElementById('{chart_id}');
     new Chart(ctx, {{
         type: '{chart_type}',
-        data: {{
-            labels: {json.dumps(labels)},
-            datasets: {json.dumps(ds_json)}
-        }},
+        data: {{ labels: {labels_js}, datasets: {ds_js} }},
         options: {{ responsive: true, maintainAspectRatio: false, scales: {{ x: {{ stacked: true }}, y: {{ stacked: true }} }} }}
     }});
-}})();
-</script>
-"""
+}})();</script>"""
+    return out + (sql_collapse(sql) if sql else "")
 
 
-def _no_data(msg: str = "Нет данных за период.") -> str:
-    return f"<p class='no-data'>{msg}</p>"
+def _table_with_sql(html: str, sql: str | None = None) -> str:
+    return html + (sql_collapse(sql) if sql else "")
 
 
 def _kpi_card(label: str, value: int | str) -> str:
-    """KPI-карточка для агрегатов."""
     return f"<div class='kpi-card'><div class='value'>{value}</div><div class='label'>{label}</div></div>"
 
 
-def dashboard_clusters_resources(tables: dict[str, pd.DataFrame]) -> str:
-    """Дашборд: Кластеры и ресурсы."""
-    out = html_header("Кластеры и ресурсы")
-    out += "<h1>Кластеры и ресурсы</h1>"
+def _no_data(msg: str) -> str:
+    return f"<p class='no-data'>{msg}</p>"
 
+
+def build_unified_report(tables: dict[str, pd.DataFrame], period_days: int) -> str:
+    """Единый HTML-отчёт со всеми разделами, TOC и SQL под каждым графиком."""
+    sql = _sql(period_days)
+    out = html_header("KaaS — Аналитический отчёт")
+    out += "<h1>KaaS — Аналитический отчёт</h1>"
+    out += """<div class="toc"><h3>Содержание</h3>
+<a href="#cr_usage">1. Custom Resource (resource_type+version, deleted=False)</a><br>
+<a href="#clusters">2. Кластеры и ресурсы</a><br>
+<a href="#operations">3. Операции и SLO</a><br>
+<a href="#timeline">4. Операции на временной шкале</a><br>
+<a href="#errors">5. Ошибки</a><br>
+<a href="#config">6. Конфигурация</a><br>
+<a href="#cr_clusters">7. CR по кластерам</a><br>
+<a href="#geography">8. География</a><br>
+<a href="#trends">9. Тренды потребления</a>
+</div>"""
+
+    # 1. Custom Resource: resource_type + version, deleted=False
+    out += '<div class="section" id="cr_usage"><h2>1. Custom Resource — использование (resource_type + version, deleted=False)</h2>'
+    cr = tables.get("conf.custom_resource", pd.DataFrame())
+    if not cr.empty and "resource_type" in cr.columns and "version" in cr.columns:
+        cr = cr.copy()
+        cr = cr[~cr["deleted"].astype(str).str.lower().isin(["true", "1", "yes"])] if "deleted" in cr.columns else cr
+        agg = cr.groupby(["resource_type", "version"]).agg(
+            cluster_count=("cluster_uid", "nunique"),
+            total=("cluster_uid", "count"),
+        ).reset_index()
+        out += agg.to_html(index=False)
+        if sql.get("cr_usage"):
+            out += sql_collapse(sql["cr_usage"])
+    else:
+        out += _no_data("Нет данных custom_resource.")
+    out += "</div>"
+
+    # 2. Кластеры и ресурсы
+    out += '<div class="section" id="clusters"><h2>2. Кластеры и ресурсы</h2>'
     cc = tables.get("state.cluster_consumption", pd.DataFrame())
     nc = tables.get("state.node_consumption", pd.DataFrame())
-    cl = tables.get("conf.cluster", pd.DataFrame())
     nd = tables.get("state.node", pd.DataFrame())
-    has_content = False
-
-    # Статусы: Updating, Running, Error, Pending, Deleting
     STATUS_ACTIVE = {"updating", "running", "pending"}
     STATUS_DEAD = {"error", "deleting"}
 
-    # Агрегаты: кластеры и ноды, активные/мёртвые
-    if not cc.empty or not cl.empty:
-        if not cc.empty and "status" in cc.columns:
-            status_lower = cc["status"].astype(str).str.lower().str.strip()
-            cc_active = int(status_lower.isin(STATUS_ACTIVE).sum())
-            cc_dead = int(status_lower.isin(STATUS_DEAD).sum())
-            cc_total = len(cc)
-        elif not cl.empty and "delete_ts" in cl.columns:
-            cc_active = int(cl["delete_ts"].isna().sum())
-            cc_dead = int(cl["delete_ts"].notna().sum())
-            cc_total = len(cl)
-        else:
-            cc_total = len(cc) if not cc.empty else len(cl)
-            cc_active = cc_total
-            cc_dead = 0
-        out += "<h2>Кластеры</h2>"
-        out += "<div class='kpi-grid'>"
-        out += _kpi_card("Всего", cc_total)
-        out += _kpi_card("Активных", cc_active)
-        out += _kpi_card("Мёртвых", cc_dead)
-        out += "</div>"
-        if cc_total > 0:
-            out += render_chart("chart_clusters", "pie", ["Активные", "Мёртвые"], [cc_active, cc_dead], "Кластеры")
-        if not cc.empty and "status" in cc.columns:
-            by_status = cc["status"].astype(str).str.strip().value_counts()
-            out += "<h2>Кластеры по статусу</h2>"
-            out += render_chart("chart_clusters_status", "bar", by_status.index.tolist(), by_status.values.tolist(), "Кол-во")
-        has_content = True
+    if not cc.empty and "status" in cc.columns:
+        status_lower = cc["status"].astype(str).str.lower().str.strip()
+        cc_active = int(status_lower.isin(STATUS_ACTIVE).sum())
+        cc_dead = int(status_lower.isin(STATUS_DEAD).sum())
+        out += "<h3>Кластеры</h3><div class='kpi-grid'>"
+        out += _kpi_card("Всего", len(cc)) + _kpi_card("Активных", cc_active) + _kpi_card("Мёртвых", cc_dead) + "</div>"
+        if cc_active + cc_dead > 0:
+            out += render_chart("c_pie", "pie", ["Активные", "Мёртвые"], [cc_active, cc_dead], "Кластеры")
+        if "status" in cc.columns:
+            by_s = cc["status"].astype(str).str.strip().value_counts()
+            out += "<h3>Кластеры по статусу</h3>"
+            out += render_chart("c_status", "bar", by_s.index.tolist(), by_s.values.tolist(), "Кол-во", sql.get("clusters_status"))
 
     if not nc.empty or not nd.empty:
+        nd_total = len(nc) if not nc.empty else len(nd)
+        nd_active, nd_dead = nd_total, 0  # значения по умолчанию
         if not nd.empty and "deleted" in nd.columns:
             nd_dead = int(nd["deleted"].astype(str).str.lower().isin(["true", "1", "yes"]).sum())
             nd_active = len(nd) - nd_dead
-            nd_total = len(nd)
         elif not nc.empty and "status" in nc.columns:
-            status_lower = nc["status"].astype(str).str.lower().str.strip()
-            nd_active = int(status_lower.isin(STATUS_ACTIVE).sum())
-            nd_dead = int(status_lower.isin(STATUS_DEAD).sum())
-            nd_total = len(nc)
-        else:
-            nd_total = len(nc) if not nc.empty else len(nd)
-            nd_active = nd_total
-            nd_dead = 0
-        out += "<h2>Ноды</h2>"
-        out += "<div class='kpi-grid'>"
-        out += _kpi_card("Всего", nd_total)
-        out += _kpi_card("Активных", nd_active)
-        out += _kpi_card("Мёртвых", nd_dead)
-        out += "</div>"
+            sl = nc["status"].astype(str).str.lower().str.strip()
+            nd_active = int(sl.isin(STATUS_ACTIVE).sum())
+            nd_dead = int(sl.isin(STATUS_DEAD).sum())
+        out += "<h3>Ноды</h3><div class='kpi-grid'>"
+        out += _kpi_card("Всего", nd_total) + _kpi_card("Активных", nd_active) + _kpi_card("Мёртвых", nd_dead) + "</div>"
         if nd_total > 0:
-            out += render_chart("chart_nodes", "pie", ["Активные", "Мёртвые"], [nd_active, nd_dead], "Ноды")
+            out += render_chart("n_pie", "pie", ["Активные", "Мёртвые"], [nd_active, nd_dead], "Ноды")
         if not nc.empty and "status" in nc.columns:
-            by_status = nc["status"].astype(str).str.strip().value_counts()
-            out += "<h2>Ноды по статусу</h2>"
-            out += render_chart("chart_nodes_status", "bar", by_status.index.tolist(), by_status.values.tolist(), "Кол-во")
-        has_content = True
+            by_s = nc["status"].astype(str).str.strip().value_counts()
+            out += "<h3>Ноды по статусу</h3>"
+            out += render_chart("n_status", "bar", by_s.index.tolist(), by_s.values.tolist(), "Кол-во", sql.get("nodes_status"))
 
     if not cc.empty and "k8s_version" in cc.columns:
         v = cc["k8s_version"].value_counts().head(10)
-        out += "<h2>Распределение по версии K8s</h2>"
-        out += render_chart("chart1", "bar", v.index.tolist(), v.values.tolist(), "Кластеры")
-        has_content = True
-
-
+        out += "<h3>Версии K8s</h3>" + render_chart("c_k8s", "bar", v.index.tolist(), v.values.tolist(), "Кластеры", sql.get("k8s_version"))
     if not cc.empty:
-        cols = ["cluster_type_code", "cpu_total", "ram_total", "nod_total", "cpu_running", "ram_running", "nod_running"]
-        avail = [c for c in cols if c in cc.columns]
-        if avail:
-            agg = cc.groupby("cluster_type_code", dropna=False)[avail].sum()
-            out += "<h2>Потребление по cluster_type_code</h2>"
-            out += agg.to_html(classes="data-table")
-            has_content = True
-
+        cols = [c for c in ["cluster_type_code", "cpu_total", "ram_total", "nod_total"] if c in cc.columns]
+        if cols:
+            out += "<h3>Потребление по cluster_type_code</h3>" + cc.groupby("cluster_type_code", dropna=False)[cols].sum().to_html()
     if not nc.empty and "on_dedicated_resources" in nc.columns:
         d = nc["on_dedicated_resources"].value_counts()
-        out += "<h2>Dedicated vs Shared</h2>"
-        out += render_chart("chart2", "pie", [str(x) for x in d.index], d.values.tolist(), "Узлы")
-        has_content = True
-
-    if not cc.empty:
-        cols = ["short_name", "cpu_total", "ram_total", "nod_total"]
-        avail = [c for c in cols if c in cc.columns]
-        if avail:
-            top = cc.nlargest(15, "cpu_total" if "cpu_total" in cc.columns else "nod_total")
-            out += "<h2>Топ кластеров по потреблению</h2>"
-            out += top[avail].to_html(classes="data-table", index=False)
-            has_content = True
-
+        out += "<h3>Dedicated vs Shared</h3>" + render_chart("c_ded", "pie", [str(x) for x in d.index], d.values.tolist(), "Узлы")
     if not cc.empty and "environment" in cc.columns:
         e = cc["environment"].value_counts()
-        out += "<h2>Потребление по environment</h2>"
-        out += render_chart("chart3", "bar", e.index.astype(str).tolist(), e.values.tolist(), "Кластеры")
-        has_content = True
+        out += "<h3>По environment</h3>" + render_chart("c_env", "bar", e.index.astype(str).tolist(), e.values.tolist(), "Кластеры")
+    out += "</div>"
 
-    if not has_content:
-        out += _no_data("Нет данных cluster_consumption/node_consumption. Увеличьте --period-days.")
-
-    out += html_footer()
-    return out
-
-
-def dashboard_operations_slo(tables: dict[str, pd.DataFrame]) -> str:
-    """Дашборд: Операции и SLO."""
-    out = html_header("Операции и SLO")
-    out += "<h1>Операции и SLO</h1>"
-
+    # 3. Операции и SLO
+    out += '<div class="section" id="operations"><h2>3. Операции и SLO</h2>'
     ops = tables.get("operation_v2.operations", pd.DataFrame())
-    tasks = tables.get("operation_v2.tasks", pd.DataFrame())
-    has_content = False
-
     if not ops.empty and "state" in ops.columns:
         s = ops["state"].value_counts()
-        out += "<h2>Распределение operations по state</h2>"
-        out += render_chart("chart1", "pie", s.index.astype(str).tolist(), s.values.tolist(), "Операции")
-        has_content = True
+        out += render_chart("o_state", "pie", s.index.astype(str).tolist(), s.values.tolist(), "Операции", sql.get("ops_state"))
+        success = ops["state"].astype(str).str.lower().isin(["success", "completed", "done"]).sum()
+        out += f"<h3>% успешных</h3><p class='kpi'>{round(100*success/len(ops),1)}%</p>"
+    else:
+        out += _no_data("Нет данных operations.")
+    out += "</div>"
 
-    if not ops.empty and "state_dt" in ops.columns and "create_dt" in ops.columns:
-        ops = ops.copy()
-        ops["duration_min"] = (pd.to_datetime(ops["state_dt"]) - pd.to_datetime(ops["create_dt"])).dt.total_seconds() / 60
-        by_type = ops.groupby("type", dropna=False)["duration_min"].mean()
-        out += "<h2>Среднее время выполнения по type</h2>"
-        out += render_chart("chart2", "bar", by_type.index.astype(str).tolist(), by_type.values.tolist(), "Минуты")
-        has_content = True
-
-    success_states = ["success", "completed", "done"]
-    if not ops.empty and "state" in ops.columns:
-        total = len(ops)
-        success = ops["state"].astype(str).str.lower().isin(success_states).sum()
-        pct = round(100 * success / total, 1) if total else 0
-        out += f"<h2>Общий % успешных операций</h2><p class='kpi'>{pct}%</p>"
-        has_content = True
-
-    if not ops.empty and "cluster_id" in ops.columns:
-        failed = ops[ops["state"].astype(str).str.lower().str.contains("fail|error", na=False)]
-        if not failed.empty:
-            top_failed = failed.groupby("cluster_id").size().nlargest(10)
-            out += "<h2>Топ проблемных кластеров (failed операций)</h2>"
-            out += pd.DataFrame({"cluster_id": top_failed.index, "failed_count": top_failed.values}).to_html(index=False)
-            has_content = True
-
-    if not has_content:
-        out += _no_data("Нет данных operations/tasks. Увеличьте --period-days.")
-
-    out += html_footer()
-    return out
-
-
-def dashboard_errors(tables: dict[str, pd.DataFrame]) -> str:
-    """Дашборд: Ошибки."""
-    out = html_header("Анализ ошибок")
-    out += "<h1>Анализ ошибок</h1>"
-
-    ops = tables.get("operation_v2.operations", pd.DataFrame())
-    tasks = tables.get("operation_v2.tasks", pd.DataFrame())
-    res = tables.get("state.resource", pd.DataFrame())
-    op = tables.get("state.operator", pd.DataFrame())
-    has_content = False
-
-    error_types = []
-    if not ops.empty and "error_type" in ops.columns:
-        error_types.extend(ops["error_type"].dropna().astype(str).tolist())
-    if not tasks.empty and "error_type" in tasks.columns:
-        error_types.extend(tasks["error_type"].dropna().astype(str).tolist())
-    if not res.empty and "status" in res.columns:
-        error_types.extend(res[res["status"].astype(str).str.contains("error|fail", case=False, na=False)]["status"].tolist())
-
-    if error_types:
-        from collections import Counter
-        c = Counter(error_types)
-        top = c.most_common(15)
-        out += "<h2>Топ error_type</h2>"
-        out += render_chart("chart1", "bar", [x[0] for x in top], [x[1] for x in top], "Кол-во")
-        has_content = True
-
-    error_msgs = []
-    if not ops.empty and "error_message" in ops.columns:
-        error_msgs.extend(ops["error_message"].dropna().astype(str).tolist())
-    if not tasks.empty and "error_message" in tasks.columns:
-        error_msgs.extend(tasks["error_message"].dropna().astype(str).tolist())
-    if error_msgs:
-        from collections import Counter
-        c = Counter(error_msgs)
-        top = c.most_common(20)
-        out += "<h2>Топ error_message</h2>"
-        df = pd.DataFrame(top, columns=["message", "count"])
-        out += df.to_html(index=False)
-        has_content = True
-
-    if not res.empty and "operator_uuid" in res.columns and "error_count" in res.columns:
-        agg = res.groupby("operator_uuid").agg({"status": "count", "error_count": "sum"}).reset_index()
-        if not op.empty and "uuid" in op.columns and "name" in op.columns:
-            agg = agg.merge(op[["uuid", "name"]], left_on="operator_uuid", right_on="uuid", how="left")
-        out += "<h2>Ресурсы в ошибке по operator</h2>"
-        out += agg.to_html(index=False)
-        has_content = True
-
-    if not has_content:
-        out += _no_data("Нет данных об ошибках (operations/tasks/resource). Увеличьте --period-days.")
-
-    out += html_footer()
-    return out
-
-
-def dashboard_config(tables: dict[str, pd.DataFrame]) -> str:
-    """Дашборд: Конфигурация."""
-    out = html_header("Конфигурация")
-    out += "<h1>Конфигурация</h1>"
-
-    cr = tables.get("conf.custom_resource", pd.DataFrame())
-    cl = tables.get("conf.cluster", pd.DataFrame())
-    op = tables.get("state.operator", pd.DataFrame())
-    adm = tables.get("conf.admins", pd.DataFrame())
-    has_content = False
-
-    if not cr.empty and "cluster_uid" in cr.columns and "resource_type" in cr.columns and "version" in cr.columns:
-        cr = cr.copy()
-        cr["combo"] = cr["resource_type"] + "@" + cr["version"].astype(str)
-        combos = cr.groupby("cluster_uid")["combo"].apply(lambda x: ", ".join(sorted(set(x)))).reset_index()
-        out += "<h2>CR комбинации на кластер</h2>"
-        out += combos.to_html(index=False)
-        has_content = True
-
-    if not cr.empty and "resource_type" in cr.columns and "version" in cr.columns:
-        cr = cr.copy()
-        cr["combo"] = cr["resource_type"] + "@" + cr["version"].astype(str)
-        top = cr["combo"].value_counts().head(10)
-        if not top.empty:
-            out += "<h2>Топ комбинаций CR</h2>"
-            out += render_chart("chart1", "bar", top.index.tolist(), top.values.tolist(), "Кластеры")
-            has_content = True
-
-    if not op.empty and not cl.empty and "cluster_uid" in op.columns and "operators_version" in cl.columns:
-        merged = op.merge(cl[["uid", "operators_version"]], left_on="cluster_uid", right_on="uid", how="left")
-        mismatched = merged[merged["version"].astype(str) != merged["operators_version"].astype(str)]
-        cols = [c for c in ["name", "version", "operators_version", "cluster_uid"] if c in mismatched.columns]
-        if cols and not mismatched.empty:
-            out += "<h2>Несовпадение версий operator vs cluster</h2>"
-            out += mismatched[cols].to_html(index=False)
-            has_content = True
-
-    if not adm.empty:
-        out += "<h2>Админы по кластерам</h2>"
-        out += adm.to_html(index=False)
-        has_content = True
-
-    if not has_content:
-        out += _no_data("Нет данных custom_resource/operator/admins.")
-
-    out += html_footer()
-    return out
-
-
-def dashboard_geography(tables: dict[str, pd.DataFrame]) -> str:
-    """Дашборд: География."""
-    out = html_header("География")
-    out += "<h1>География и зоны</h1>"
-
-    cc = tables.get("state.cluster_consumption", pd.DataFrame())
-    nc = tables.get("state.node_consumption", pd.DataFrame())
-    has_content = False
-
-    if not cc.empty and "region" in cc.columns and "environment" in cc.columns:
-        heat = cc.groupby(["region", "environment"]).size().unstack(fill_value=0)
-        out += "<h2>Region × Environment (кластеры)</h2>"
-        out += heat.to_html()
-        has_content = True
-
-    if not cc.empty and "geo_zone" in cc.columns:
-        g = cc["geo_zone"].value_counts().head(15)
-        out += "<h2>Кластеры по geo_zone</h2>"
-        out += render_chart("chart1", "bar", g.index.astype(str).tolist(), g.values.tolist(), "Кластеры")
-        has_content = True
-
-    if not nc.empty and "region" in nc.columns:
-        r = nc["region"].value_counts().head(15)
-        out += "<h2>Узлы по region</h2>"
-        out += render_chart("chart2", "bar", r.index.astype(str).tolist(), r.values.tolist(), "Узлы")
-        has_content = True
-
-    if not has_content:
-        out += _no_data("Нет данных cluster_consumption/node_consumption. Увеличьте --period-days.")
-
-    out += html_footer()
-    return out
-
-
-def dashboard_consumption_trends(tables: dict[str, pd.DataFrame]) -> str:
-    """Дашборд: Тренды потребления."""
-    out = html_header("Тренды потребления")
-    out += "<h1>Тренды потребления</h1>"
-
-    cc = tables.get("state.cluster_consumption", pd.DataFrame())
-    has_content = False
-
-    if not cc.empty and "update_ts" in cc.columns:
-        cc = cc.copy()
-        cc["update_ts"] = pd.to_datetime(cc["update_ts"])
-        cc["day"] = cc["update_ts"].dt.date
-        cols = ["cpu_total", "ram_total", "nod_total"]
-        avail = [c for c in cols if c in cc.columns]
-        if avail:
-            daily = cc.groupby("day")[avail].sum()
-            out += "<h2>Потребление по дням</h2>"
-            out += daily.to_html()
-            has_content = True
-
-    if not cc.empty and "short_name" in cc.columns:
-        cols = ["cpu_running", "ram_running"]
-        avail = [c for c in cols if c in cc.columns]
-        if avail:
-            top5 = cc.nlargest(5, "cpu_running" if "cpu_running" in cc.columns else "nod_total")
-            out += "<h2>Топ-5 кластеров по потреблению</h2>"
-            out += top5[["short_name"] + avail].to_html(index=False)
-            has_content = True
-
-    if not cc.empty and "environment" in cc.columns:
-        cols = ["cpu_total", "ram_total", "nod_total"]
-        avail = [c for c in cols if c in cc.columns]
-        if avail:
-            by_env = cc.groupby("environment")[avail].sum()
-            out += "<h2>Потребление по environment</h2>"
-            out += by_env.to_html()
-            has_content = True
-
-    if not has_content:
-        out += _no_data("Нет данных cluster_consumption. Увеличьте --period-days.")
-
-    out += html_footer()
-    return out
-
-
-def dashboard_operations_timeline(tables: dict[str, pd.DataFrame]) -> str:
-    """Дашборд: Успешные / неуспешные операции на временной шкале."""
-    out = html_header("Операции: успешные / неуспешные по дням")
-    out += "<h1>Операции на временной шкале</h1>"
-
-    ops = tables.get("operation_v2.operations", pd.DataFrame())
-    has_content = False
-
+    # 4. Операции на временной шкале
+    out += '<div class="section" id="timeline"><h2>4. Операции на временной шкале</h2>'
     if not ops.empty and "state_dt" in ops.columns and "state" in ops.columns:
         ops = ops.copy()
         ops["day"] = pd.to_datetime(ops["state_dt"]).dt.date
-        success_states = ["success", "completed", "done"]
-        ops["is_success"] = ops["state"].astype(str).str.lower().isin(success_states)
-
-        daily = ops.groupby("day").agg(
-            success=("is_success", "sum"),
-            failed=("is_success", lambda x: (~x).sum()),
-        ).reset_index()
-
+        ops["ok"] = ops["state"].astype(str).str.lower().isin(["success", "completed", "done"])
+        daily = ops.groupby("day").agg(success=("ok", "sum"), failed=("ok", lambda x: (~x).sum())).reset_index()
         if not daily.empty:
-            labels = [str(d) for d in daily["day"]]
-            datasets = [
-                ("Успешные", daily["success"].astype(int).tolist()),
-                ("Неуспешные", daily["failed"].astype(int).tolist()),
-            ]
-            out += "<h2>Успешные / неуспешные операции по дням</h2>"
-            out += render_chart_multi("chart_timeline", "bar", labels, datasets)
-            out += "<h2>Данные по дням</h2>"
-            out += daily.to_html(index=False)
-            has_content = True
+            out += render_chart_multi("o_tl", "bar", [str(d) for d in daily["day"]],
+                [("Успешные", daily["success"].astype(int).tolist()), ("Неуспешные", daily["failed"].astype(int).tolist())],
+                sql.get("ops_timeline"))
+    out += "</div>"
 
-    if not has_content:
-        out += _no_data("Нет данных operations. Увеличьте --period-days.")
+    # 5. Ошибки
+    out += '<div class="section" id="errors"><h2>5. Ошибки</h2>'
+    tasks = tables.get("operation_v2.tasks", pd.DataFrame())
+    res = tables.get("state.resource", pd.DataFrame())
+    op = tables.get("state.operator", pd.DataFrame())
+    err_types = []
+    if not ops.empty and "error_type" in ops.columns:
+        err_types.extend(ops["error_type"].dropna().astype(str).tolist())
+    if not tasks.empty and "error_type" in tasks.columns:
+        err_types.extend(tasks["error_type"].dropna().astype(str).tolist())
+    if err_types:
+        from collections import Counter
+        top = Counter(err_types).most_common(15)
+        out += "<h3>Топ error_type</h3>" + render_chart("e_type", "bar", [x[0] for x in top], [x[1] for x in top], "Кол-во")
+    if not res.empty and "operator_uuid" in res.columns:
+        agg = res.groupby("operator_uuid").agg({"status": "count", "error_count": "sum"}).reset_index()
+        if not op.empty:
+            agg = agg.merge(op[["uuid", "name"]], left_on="operator_uuid", right_on="uuid", how="left")
+        out += "<h3>Ресурсы в ошибке по operator</h3>" + agg.to_html(index=False)
+    out += "</div>"
 
-    out += html_footer()
-    return out
-
-
-def dashboard_cr_per_cluster(tables: dict[str, pd.DataFrame]) -> str:
-    """Дашборд: CR установленные на каждый кластер."""
-    out = html_header("Custom Resources по кластерам")
-    out += "<h1>CR установленные на кластеры</h1>"
-
+    # 6. Конфигурация
+    out += '<div class="section" id="config"><h2>6. Конфигурация</h2>'
     cr = tables.get("conf.custom_resource", pd.DataFrame())
     cl = tables.get("conf.cluster", pd.DataFrame())
-    has_content = False
+    adm = tables.get("conf.admins", pd.DataFrame())
+    if not cr.empty and "cluster_uid" in cr.columns:
+        cr = cr[~cr["deleted"].astype(str).str.lower().isin(["true", "1", "yes"])] if "deleted" in cr.columns else cr
+        combos = cr.groupby("cluster_uid").apply(lambda x: ", ".join(sorted(set(x["resource_type"] + "@" + x["version"].astype(str))))).reset_index()
+        out += "<h3>CR комбинации на кластер</h3>" + combos.to_html(index=False)
+    if not adm.empty:
+        out += "<h3>Админы</h3>" + adm.to_html(index=False)
+    out += "</div>"
 
-    if not cr.empty and "cluster_uid" in cr.columns and "resource_type" in cr.columns and "version" in cr.columns:
+    # 7. CR по кластерам
+    out += '<div class="section" id="cr_clusters"><h2>7. CR по кластерам</h2>'
+    if not cr.empty and "cluster_uid" in cr.columns:
         cr = cr.copy()
-        cr["cr_version"] = cr["resource_type"] + " @ " + cr["version"].astype(str)
-        if "deleted" in cr.columns:
-            cr = cr[~cr["deleted"].astype(str).str.lower().isin(["true", "1", "yes"])]
+        cr["cr_v"] = cr["resource_type"] + " @ " + cr["version"].astype(str)
+        by_cl = cr.groupby("cluster_uid").agg(cr_list=("cr_v", lambda x: ", ".join(sorted(set(x)))), cr_count=("resource_type", "nunique")).reset_index()
+        if not cl.empty:
+            by_cl = by_cl.merge(cl[["uid", "short_name"]], left_on="cluster_uid", right_on="uid", how="left")
+        out += by_cl.to_html(index=False)
+        by_type = cr.groupby(["resource_type", "version"]).agg(cluster_count=("cluster_uid", "nunique")).reset_index()
+        out += "<h3>Тип+версия → кластеры</h3>" + by_type.to_html(index=False)
+        if sql.get("cr_usage"):
+            out += sql_collapse(sql["cr_usage"])
+    out += "</div>"
 
-        cluster_crs = cr.groupby("cluster_uid").agg(
-            cr_list=("cr_version", lambda x: ", ".join(sorted(set(x)))),
-            cr_count=("resource_type", "nunique"),
-        ).reset_index()
+    # 8. География
+    out += '<div class="section" id="geography"><h2>8. География</h2>'
+    if not cc.empty and "region" in cc.columns and "environment" in cc.columns:
+        heat = cc.groupby(["region", "environment"]).size().unstack(fill_value=0)
+        out += heat.to_html()
+    if not nc.empty and "region" in nc.columns:
+        r = nc["region"].value_counts().head(15)
+        out += "<h3>Узлы по region</h3>" + render_chart("g_reg", "bar", r.index.astype(str).tolist(), r.values.tolist(), "Узлы")
+    out += "</div>"
 
-        if not cl.empty and "uid" in cl.columns and "short_name" in cl.columns:
-            cluster_crs = cluster_crs.merge(
-                cl[["uid", "short_name", "name"]],
-                left_on="cluster_uid",
-                right_on="uid",
-                how="left",
-            )
-            cols = ["short_name", "name", "cr_count", "cr_list"]
-            cols = [c for c in cols if c in cluster_crs.columns]
-            out += "<h2>CR по кластерам</h2>"
-            out += cluster_crs[cols].to_html(index=False)
-            has_content = True
-        else:
-            out += "<h2>CR по кластерам</h2>"
-            out += cluster_crs.to_html(index=False)
-            has_content = True
-
-        cr_by_type = cr.groupby(["resource_type", "version"]).agg(
-            cluster_count=("cluster_uid", "nunique"),
-            clusters=("cluster_uid", lambda x: ", ".join(sorted(set(str(u) for u in x)))),
-        ).reset_index()
-        out += "<h2>Установки CR: тип и версия → кластеры</h2>"
-        out += cr_by_type.to_html(index=False)
-        has_content = True
-
-    if not has_content:
-        out += _no_data("Нет данных custom_resource. Увеличьте --period-days.")
+    # 9. Тренды потребления
+    out += '<div class="section" id="trends"><h2>9. Тренды потребления</h2>'
+    if not cc.empty and "update_ts" in cc.columns:
+        cc = cc.copy()
+        cc["day"] = pd.to_datetime(cc["update_ts"]).dt.date
+        cols = [c for c in ["cpu_total", "ram_total", "nod_total"] if c in cc.columns]
+        if cols:
+            out += cc.groupby("day")[cols].sum().to_html()
+    out += "</div>"
 
     out += html_footer()
     return out
@@ -639,14 +405,14 @@ def main():
     parser = argparse.ArgumentParser(description="KaaS DB Analyzer")
     parser.add_argument("--config", default="db_schema.json", help="Path to db_schema.json")
     parser.add_argument("--db-url", default=os.environ.get("DATABASE_URL"), help="PostgreSQL connection URL")
-    parser.add_argument("--db-user", default=os.environ.get("DB_USER"), help="DB user (если не в URL)")
-    parser.add_argument("--db-password", default=os.environ.get("DB_PASSWORD"), help="DB password (если не в URL)")
+    parser.add_argument("--db-user", default=os.environ.get("DB_USER"), help="DB user")
+    parser.add_argument("--db-password", default=os.environ.get("DB_PASSWORD"), help="DB password")
     parser.add_argument("--ssl-cert", default=os.environ.get("DB_SSL_CERT"), help="Path to client cert (mTLS)")
     parser.add_argument("--ssl-key", default=os.environ.get("DB_SSL_KEY"), help="Path to client key (mTLS)")
     parser.add_argument("--ssl-rootcert", default=os.environ.get("DB_SSL_ROOTCERT"), help="Path to CA cert (mTLS)")
-    parser.add_argument("--output", default="reports", help="Output directory for HTML reports")
-    parser.add_argument("--period-days", type=int, default=7, help="Период загрузки в днях (по умолчанию 7)")
-    parser.add_argument("--dry-run", action="store_true", help="Generate reports from empty data (no DB connection)")
+    parser.add_argument("--output", default="reports", help="Output directory")
+    parser.add_argument("--period-days", type=int, default=7, help="Период загрузки в днях")
+    parser.add_argument("--dry-run", action="store_true", help="Empty data, no DB")
     args = parser.parse_args()
 
     base = Path(__file__).parent
@@ -658,55 +424,34 @@ def main():
     tables: dict[str, pd.DataFrame] = {}
 
     if args.dry_run:
-        print("Dry run: using empty DataFrames")
         for item in schema_config:
-            key = f"{item['schema_name']}.{item['table_name']}"
-            tables[key] = pd.DataFrame()
+            tables[f"{item['schema_name']}.{item['table_name']}"] = pd.DataFrame()
     elif args.db_url:
-        def _resolve_cert(path: str | None, default: Path) -> str | None:
-            if path:
-                p = Path(path)
-                return str(base / p) if not p.is_absolute() else path
-            return str(default) if default.exists() else None
-
-        db_url = args.db_url
-        if args.db_user is not None or args.db_password is not None:
+        def _resolve(p, d):
+            return str(base / p) if p and not Path(p).is_absolute() else (str(d) if d.exists() else None)
+        ssl_cert = _resolve(args.ssl_cert, base / "certs" / "client.pem")
+        ssl_key = _resolve(args.ssl_key, base / "certs" / "client-key.pem")
+        ssl_rootcert = _resolve(args.ssl_rootcert, base / "certs" / "ca.pem")
+        if args.db_user or args.db_password:
             from urllib.parse import urlparse, urlunparse
-            parsed = urlparse(db_url)
-            user = args.db_user if args.db_user is not None else (parsed.username or "")
-            password = args.db_password if args.db_password is not None else (parsed.password or "")
-            host_part = f"{parsed.hostname}:{parsed.port}" if parsed.port else (parsed.hostname or "")
-            netloc = f"{user}:{password}@{host_part}" if (user or password) else host_part
-            db_url = urlunparse(parsed._replace(netloc=netloc))
-
-        ssl_cert = _resolve_cert(args.ssl_cert, base / "certs" / "client.pem")
-        ssl_key = _resolve_cert(args.ssl_key, base / "certs" / "client-key.pem")
-        ssl_rootcert = _resolve_cert(args.ssl_rootcert, base / "certs" / "ca.pem")
-        engine = get_db_engine(db_url, ssl_cert, ssl_key, ssl_rootcert)
+            p = urlparse(args.db_url)
+            u = args.db_user or p.username or ""
+            pw = args.db_password or p.password or ""
+            np = f"{u}:{pw}@{p.hostname}" + (f":{p.port}" if p.port else "")
+            args.db_url = urlunparse(p._replace(netloc=np))
+        engine = get_db_engine(args.db_url, ssl_cert, ssl_key, ssl_rootcert)
         try:
             tables = load_all_tables(engine, schema_config, args.period_days)
         finally:
             engine.dispose()
     else:
-        print("Error: --db-url or DATABASE_URL required (use --dry-run for empty reports)")
+        print("Error: --db-url or DATABASE_URL required (use --dry-run)")
         return 1
 
-    dashboards = [
-        ("clusters_resources.html", dashboard_clusters_resources),
-        ("operations_slo.html", dashboard_operations_slo),
-        ("operations_timeline.html", dashboard_operations_timeline),
-        ("errors.html", dashboard_errors),
-        ("config.html", dashboard_config),
-        ("cr_per_cluster.html", dashboard_cr_per_cluster),
-        ("geography.html", dashboard_geography),
-        ("consumption_trends.html", dashboard_consumption_trends),
-    ]
-
-    for name, fn in dashboards:
-        out_path = output_dir / name
-        html = fn(tables)
-        out_path.write_text(html, encoding="utf-8")
-        print(f"Written {out_path}")
+    html = build_unified_report(tables, args.period_days)
+    out_path = output_dir / "report.html"
+    out_path.write_text(html, encoding="utf-8")
+    print(f"Written {out_path}")
 
     return 0
 
