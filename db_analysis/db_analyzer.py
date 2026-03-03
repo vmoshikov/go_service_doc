@@ -50,18 +50,29 @@ def get_db_engine(
     return create_engine(db_url)
 
 
-def fetch_table(engine: Any, schema: str, table: str, columns: str, where: str | None) -> pd.DataFrame:
+def fetch_table(
+    engine: Any,
+    schema: str,
+    table: str,
+    columns: str,
+    where: str | None,
+    period_days: int = 7,
+) -> pd.DataFrame:
     """Чтение таблицы в DataFrame."""
+    import re
     cols = columns.split(",")
     cols_str = ", ".join(c.strip() for c in cols)
     full_table = f'"{schema}"."{table}"'
     sql = f"SELECT {cols_str} FROM {full_table}"
     if where:
+        where = re.sub(r"interval\s+'\d+\s*hours'", f"interval '{period_days} days'", where, flags=re.I)
         sql += f" WHERE {where}"
     return pd.read_sql(sql, engine)
 
 
-def load_all_tables(engine: Any, schema_config: list[dict]) -> dict[str, pd.DataFrame]:
+def load_all_tables(
+    engine: Any, schema_config: list[dict], period_days: int = 7
+) -> dict[str, pd.DataFrame]:
     """Загрузка всех таблиц из конфигурации."""
     tables = {}
     for item in schema_config:
@@ -71,7 +82,7 @@ def load_all_tables(engine: Any, schema_config: list[dict]) -> dict[str, pd.Data
         where = item.get("where")
         key = f"{schema}.{table}"
         try:
-            tables[key] = fetch_table(engine, schema, table, columns, where)
+            tables[key] = fetch_table(engine, schema, table, columns, where, period_days)
         except Exception as e:
             print(f"Warning: could not load {key}: {e}")
             tables[key] = pd.DataFrame()
@@ -96,6 +107,7 @@ def html_header(title: str) -> str:
         th, td {{ padding: 8px 12px; text-align: left; border-bottom: 1px solid #eee; }}
         th {{ background: #f0f0f0; font-weight: 600; }}
         .kpi {{ font-size: 2rem; font-weight: bold; color: #2e7d32; }}
+        .no-data {{ color: #888; font-style: italic; padding: 1rem; }}
     </style>
 </head>
 <body>
@@ -128,6 +140,10 @@ def render_chart(chart_id: str, chart_type: str, labels: list, data: list, title
 """
 
 
+def _no_data(msg: str = "Нет данных за период.") -> str:
+    return f"<p class='no-data'>{msg}</p>"
+
+
 def dashboard_clusters_resources(tables: dict[str, pd.DataFrame]) -> str:
     """Дашборд: Кластеры и ресурсы."""
     out = html_header("Кластеры и ресурсы")
@@ -136,11 +152,14 @@ def dashboard_clusters_resources(tables: dict[str, pd.DataFrame]) -> str:
     cc = tables.get("state.cluster_consumption", pd.DataFrame())
     nc = tables.get("state.node_consumption", pd.DataFrame())
     cl = tables.get("conf.cluster", pd.DataFrame())
+    has_content = False
 
     if not cc.empty and "k8s_version" in cc.columns:
         v = cc["k8s_version"].value_counts().head(10)
         out += "<h2>Распределение по версии K8s</h2>"
         out += render_chart("chart1", "bar", v.index.tolist(), v.values.tolist(), "Кластеры")
+        has_content = True
+
 
     if not cc.empty:
         cols = ["cluster_type_code", "cpu_total", "ram_total", "nod_total", "cpu_running", "ram_running", "nod_running"]
@@ -149,11 +168,13 @@ def dashboard_clusters_resources(tables: dict[str, pd.DataFrame]) -> str:
             agg = cc.groupby("cluster_type_code", dropna=False)[avail].sum()
             out += "<h2>Потребление по cluster_type_code</h2>"
             out += agg.to_html(classes="data-table")
+            has_content = True
 
     if not nc.empty and "on_dedicated_resources" in nc.columns:
         d = nc["on_dedicated_resources"].value_counts()
         out += "<h2>Dedicated vs Shared</h2>"
         out += render_chart("chart2", "pie", [str(x) for x in d.index], d.values.tolist(), "Узлы")
+        has_content = True
 
     if not cc.empty:
         cols = ["short_name", "cpu_total", "ram_total", "nod_total"]
@@ -162,11 +183,16 @@ def dashboard_clusters_resources(tables: dict[str, pd.DataFrame]) -> str:
             top = cc.nlargest(15, "cpu_total" if "cpu_total" in cc.columns else "nod_total")
             out += "<h2>Топ кластеров по потреблению</h2>"
             out += top[avail].to_html(classes="data-table", index=False)
+            has_content = True
 
     if not cc.empty and "environment" in cc.columns:
         e = cc["environment"].value_counts()
         out += "<h2>Потребление по environment</h2>"
         out += render_chart("chart3", "bar", e.index.astype(str).tolist(), e.values.tolist(), "Кластеры")
+        has_content = True
+
+    if not has_content:
+        out += _no_data("Нет данных cluster_consumption/node_consumption. Увеличьте --period-days.")
 
     out += html_footer()
     return out
@@ -179,17 +205,21 @@ def dashboard_operations_slo(tables: dict[str, pd.DataFrame]) -> str:
 
     ops = tables.get("operation_v2.operations", pd.DataFrame())
     tasks = tables.get("operation_v2.tasks", pd.DataFrame())
+    has_content = False
 
     if not ops.empty and "state" in ops.columns:
         s = ops["state"].value_counts()
         out += "<h2>Распределение operations по state</h2>"
         out += render_chart("chart1", "pie", s.index.astype(str).tolist(), s.values.tolist(), "Операции")
+        has_content = True
 
     if not ops.empty and "state_dt" in ops.columns and "create_dt" in ops.columns:
+        ops = ops.copy()
         ops["duration_min"] = (pd.to_datetime(ops["state_dt"]) - pd.to_datetime(ops["create_dt"])).dt.total_seconds() / 60
         by_type = ops.groupby("type", dropna=False)["duration_min"].mean()
         out += "<h2>Среднее время выполнения по type</h2>"
         out += render_chart("chart2", "bar", by_type.index.astype(str).tolist(), by_type.values.tolist(), "Минуты")
+        has_content = True
 
     success_states = ["success", "completed", "done"]
     if not ops.empty and "state" in ops.columns:
@@ -197,12 +227,18 @@ def dashboard_operations_slo(tables: dict[str, pd.DataFrame]) -> str:
         success = ops["state"].astype(str).str.lower().isin(success_states).sum()
         pct = round(100 * success / total, 1) if total else 0
         out += f"<h2>Общий % успешных операций</h2><p class='kpi'>{pct}%</p>"
+        has_content = True
 
     if not ops.empty and "cluster_id" in ops.columns:
         failed = ops[ops["state"].astype(str).str.lower().str.contains("fail|error", na=False)]
-        top_failed = failed.groupby("cluster_id").size().nlargest(10)
-        out += "<h2>Топ проблемных кластеров (failed операций)</h2>"
-        out += pd.DataFrame({"cluster_id": top_failed.index, "failed_count": top_failed.values}).to_html(index=False)
+        if not failed.empty:
+            top_failed = failed.groupby("cluster_id").size().nlargest(10)
+            out += "<h2>Топ проблемных кластеров (failed операций)</h2>"
+            out += pd.DataFrame({"cluster_id": top_failed.index, "failed_count": top_failed.values}).to_html(index=False)
+            has_content = True
+
+    if not has_content:
+        out += _no_data("Нет данных operations/tasks. Увеличьте --period-days.")
 
     out += html_footer()
     return out
@@ -217,6 +253,7 @@ def dashboard_errors(tables: dict[str, pd.DataFrame]) -> str:
     tasks = tables.get("operation_v2.tasks", pd.DataFrame())
     res = tables.get("state.resource", pd.DataFrame())
     op = tables.get("state.operator", pd.DataFrame())
+    has_content = False
 
     error_types = []
     if not ops.empty and "error_type" in ops.columns:
@@ -232,6 +269,7 @@ def dashboard_errors(tables: dict[str, pd.DataFrame]) -> str:
         top = c.most_common(15)
         out += "<h2>Топ error_type</h2>"
         out += render_chart("chart1", "bar", [x[0] for x in top], [x[1] for x in top], "Кол-во")
+        has_content = True
 
     error_msgs = []
     if not ops.empty and "error_message" in ops.columns:
@@ -245,6 +283,7 @@ def dashboard_errors(tables: dict[str, pd.DataFrame]) -> str:
         out += "<h2>Топ error_message</h2>"
         df = pd.DataFrame(top, columns=["message", "count"])
         out += df.to_html(index=False)
+        has_content = True
 
     if not res.empty and "operator_uuid" in res.columns and "error_count" in res.columns:
         agg = res.groupby("operator_uuid").agg({"status": "count", "error_count": "sum"}).reset_index()
@@ -252,6 +291,10 @@ def dashboard_errors(tables: dict[str, pd.DataFrame]) -> str:
             agg = agg.merge(op[["uuid", "name"]], left_on="operator_uuid", right_on="uuid", how="left")
         out += "<h2>Ресурсы в ошибке по operator</h2>"
         out += agg.to_html(index=False)
+        has_content = True
+
+    if not has_content:
+        out += _no_data("Нет данных об ошибках (operations/tasks/resource). Увеличьте --period-days.")
 
     out += html_footer()
     return out
@@ -266,30 +309,41 @@ def dashboard_config(tables: dict[str, pd.DataFrame]) -> str:
     cl = tables.get("conf.cluster", pd.DataFrame())
     op = tables.get("state.operator", pd.DataFrame())
     adm = tables.get("conf.admins", pd.DataFrame())
+    has_content = False
 
     if not cr.empty and "cluster_uid" in cr.columns and "resource_type" in cr.columns and "version" in cr.columns:
+        cr = cr.copy()
         cr["combo"] = cr["resource_type"] + "@" + cr["version"].astype(str)
         combos = cr.groupby("cluster_uid")["combo"].apply(lambda x: ", ".join(sorted(set(x)))).reset_index()
         out += "<h2>CR комбинации на кластер</h2>"
         out += combos.to_html(index=False)
+        has_content = True
 
     if not cr.empty and "resource_type" in cr.columns and "version" in cr.columns:
+        cr = cr.copy()
         cr["combo"] = cr["resource_type"] + "@" + cr["version"].astype(str)
         top = cr["combo"].value_counts().head(10)
-        out += "<h2>Топ комбинаций CR</h2>"
-        out += render_chart("chart1", "bar", top.index.tolist(), top.values.tolist(), "Кластеры")
+        if not top.empty:
+            out += "<h2>Топ комбинаций CR</h2>"
+            out += render_chart("chart1", "bar", top.index.tolist(), top.values.tolist(), "Кластеры")
+            has_content = True
 
     if not op.empty and not cl.empty and "cluster_uid" in op.columns and "operators_version" in cl.columns:
         merged = op.merge(cl[["uid", "operators_version"]], left_on="cluster_uid", right_on="uid", how="left")
         mismatched = merged[merged["version"].astype(str) != merged["operators_version"].astype(str)]
         cols = [c for c in ["name", "version", "operators_version", "cluster_uid"] if c in mismatched.columns]
-        if cols:
+        if cols and not mismatched.empty:
             out += "<h2>Несовпадение версий operator vs cluster</h2>"
             out += mismatched[cols].to_html(index=False)
+            has_content = True
 
     if not adm.empty:
         out += "<h2>Админы по кластерам</h2>"
         out += adm.to_html(index=False)
+        has_content = True
+
+    if not has_content:
+        out += _no_data("Нет данных custom_resource/operator/admins.")
 
     out += html_footer()
     return out
@@ -302,21 +356,28 @@ def dashboard_geography(tables: dict[str, pd.DataFrame]) -> str:
 
     cc = tables.get("state.cluster_consumption", pd.DataFrame())
     nc = tables.get("state.node_consumption", pd.DataFrame())
+    has_content = False
 
     if not cc.empty and "region" in cc.columns and "environment" in cc.columns:
         heat = cc.groupby(["region", "environment"]).size().unstack(fill_value=0)
         out += "<h2>Region × Environment (кластеры)</h2>"
         out += heat.to_html()
+        has_content = True
 
     if not cc.empty and "geo_zone" in cc.columns:
         g = cc["geo_zone"].value_counts().head(15)
         out += "<h2>Кластеры по geo_zone</h2>"
         out += render_chart("chart1", "bar", g.index.astype(str).tolist(), g.values.tolist(), "Кластеры")
+        has_content = True
 
     if not nc.empty and "region" in nc.columns:
         r = nc["region"].value_counts().head(15)
         out += "<h2>Узлы по region</h2>"
         out += render_chart("chart2", "bar", r.index.astype(str).tolist(), r.values.tolist(), "Узлы")
+        has_content = True
+
+    if not has_content:
+        out += _no_data("Нет данных cluster_consumption/node_consumption. Увеличьте --period-days.")
 
     out += html_footer()
     return out
@@ -328,8 +389,10 @@ def dashboard_consumption_trends(tables: dict[str, pd.DataFrame]) -> str:
     out += "<h1>Тренды потребления</h1>"
 
     cc = tables.get("state.cluster_consumption", pd.DataFrame())
+    has_content = False
 
     if not cc.empty and "update_ts" in cc.columns:
+        cc = cc.copy()
         cc["update_ts"] = pd.to_datetime(cc["update_ts"])
         cc["day"] = cc["update_ts"].dt.date
         cols = ["cpu_total", "ram_total", "nod_total"]
@@ -338,6 +401,7 @@ def dashboard_consumption_trends(tables: dict[str, pd.DataFrame]) -> str:
             daily = cc.groupby("day")[avail].sum()
             out += "<h2>Потребление по дням</h2>"
             out += daily.to_html()
+            has_content = True
 
     if not cc.empty and "short_name" in cc.columns:
         cols = ["cpu_running", "ram_running"]
@@ -346,6 +410,7 @@ def dashboard_consumption_trends(tables: dict[str, pd.DataFrame]) -> str:
             top5 = cc.nlargest(5, "cpu_running" if "cpu_running" in cc.columns else "nod_total")
             out += "<h2>Топ-5 кластеров по потреблению</h2>"
             out += top5[["short_name"] + avail].to_html(index=False)
+            has_content = True
 
     if not cc.empty and "environment" in cc.columns:
         cols = ["cpu_total", "ram_total", "nod_total"]
@@ -354,6 +419,10 @@ def dashboard_consumption_trends(tables: dict[str, pd.DataFrame]) -> str:
             by_env = cc.groupby("environment")[avail].sum()
             out += "<h2>Потребление по environment</h2>"
             out += by_env.to_html()
+            has_content = True
+
+    if not has_content:
+        out += _no_data("Нет данных cluster_consumption. Увеличьте --period-days.")
 
     out += html_footer()
     return out
@@ -369,6 +438,7 @@ def main():
     parser.add_argument("--ssl-key", default=os.environ.get("DB_SSL_KEY"), help="Path to client key (mTLS)")
     parser.add_argument("--ssl-rootcert", default=os.environ.get("DB_SSL_ROOTCERT"), help="Path to CA cert (mTLS)")
     parser.add_argument("--output", default="reports", help="Output directory for HTML reports")
+    parser.add_argument("--period-days", type=int, default=7, help="Период загрузки в днях (по умолчанию 7)")
     parser.add_argument("--dry-run", action="store_true", help="Generate reports from empty data (no DB connection)")
     args = parser.parse_args()
 
@@ -407,7 +477,7 @@ def main():
         ssl_rootcert = _resolve_cert(args.ssl_rootcert, base / "certs" / "ca.pem")
         engine = get_db_engine(db_url, ssl_cert, ssl_key, ssl_rootcert)
         try:
-            tables = load_all_tables(engine, schema_config)
+            tables = load_all_tables(engine, schema_config, args.period_days)
         finally:
             engine.dispose()
     else:
