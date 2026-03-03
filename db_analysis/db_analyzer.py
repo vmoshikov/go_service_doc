@@ -2,7 +2,7 @@
 """
 KaaS DB Analyzer — анализ данных БД и генерация HTML-отчётов.
 
-Подключение: JDBC mTLS PostgreSQL.
+Подключение: psycopg2 + mTLS + логин/пароль (PostgreSQL).
 Дашборды: Кластеры и ресурсы, Операции и SLO, Ошибки, Конфигурация, География, Тренды потребления.
 """
 
@@ -21,13 +21,30 @@ def load_schema(config_path: Path) -> list[dict]:
         return json.load(f)
 
 
-def get_jdbc_connection(jdbc_url: str, jdbc_jar: str) -> Any:
-    """Подключение к PostgreSQL через JDBC с mTLS."""
-    import jaydebeapi
+def get_db_connection(
+    db_url: str,
+    ssl_cert: str | None = None,
+    ssl_key: str | None = None,
+    ssl_rootcert: str | None = None,
+) -> Any:
+    """Подключение к PostgreSQL через psycopg2: mTLS + логин/пароль из URL."""
+    import psycopg2
+    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
-    driver = "org.postgresql.Driver"
-    conn = jaydebeapi.connect(jclassname=driver, url=jdbc_url, jars=[jdbc_jar])
-    return conn
+    if ssl_cert or ssl_key or ssl_rootcert:
+        parsed = urlparse(db_url)
+        query = parse_qs(parsed.query)
+        query.setdefault("sslmode", ["verify-full"])
+        if ssl_cert:
+            query["sslcert"] = [ssl_cert]
+        if ssl_key:
+            query["sslkey"] = [ssl_key]
+        if ssl_rootcert:
+            query["sslrootcert"] = [ssl_rootcert]
+        new_query = urlencode(query, doseq=True)
+        db_url = urlunparse(parsed._replace(query=new_query))
+
+    return psycopg2.connect(db_url)
 
 
 def fetch_table(conn: Any, schema: str, table: str, columns: str, where: str | None) -> pd.DataFrame:
@@ -342,8 +359,12 @@ def dashboard_consumption_trends(tables: dict[str, pd.DataFrame]) -> str:
 def main():
     parser = argparse.ArgumentParser(description="KaaS DB Analyzer")
     parser.add_argument("--config", default="db_schema.json", help="Path to db_schema.json")
-    parser.add_argument("--jdbc-url", default=os.environ.get("DATABASE_JDBC_URL"), help="JDBC URL")
-    parser.add_argument("--jdbc-jar", default="jars/postgresql-42.7.3.jar", help="Path to PostgreSQL JDBC driver JAR")
+    parser.add_argument("--db-url", default=os.environ.get("DATABASE_URL"), help="PostgreSQL connection URL")
+    parser.add_argument("--db-user", default=os.environ.get("DB_USER"), help="DB user (если не в URL)")
+    parser.add_argument("--db-password", default=os.environ.get("DB_PASSWORD"), help="DB password (если не в URL)")
+    parser.add_argument("--ssl-cert", default=os.environ.get("DB_SSL_CERT"), help="Path to client cert (mTLS)")
+    parser.add_argument("--ssl-key", default=os.environ.get("DB_SSL_KEY"), help="Path to client key (mTLS)")
+    parser.add_argument("--ssl-rootcert", default=os.environ.get("DB_SSL_ROOTCERT"), help="Path to CA cert (mTLS)")
     parser.add_argument("--output", default="reports", help="Output directory for HTML reports")
     parser.add_argument("--dry-run", action="store_true", help="Generate reports from empty data (no DB connection)")
     args = parser.parse_args()
@@ -361,18 +382,33 @@ def main():
         for item in schema_config:
             key = f"{item['schema_name']}.{item['table_name']}"
             tables[key] = pd.DataFrame()
-    elif args.jdbc_url:
-        jdbc_jar = base / args.jdbc_jar if not Path(args.jdbc_jar).is_absolute() else Path(args.jdbc_jar)
-        if not jdbc_jar.exists():
-            print(f"Error: JDBC driver not found at {jdbc_jar}")
-            return 1
-        conn = get_jdbc_connection(args.jdbc_url, str(jdbc_jar))
+    elif args.db_url:
+        def _resolve_cert(path: str | None, default: Path) -> str | None:
+            if path:
+                p = Path(path)
+                return str(base / p) if not p.is_absolute() else path
+            return str(default) if default.exists() else None
+
+        db_url = args.db_url
+        if args.db_user is not None or args.db_password is not None:
+            from urllib.parse import urlparse, urlunparse
+            parsed = urlparse(db_url)
+            user = args.db_user if args.db_user is not None else (parsed.username or "")
+            password = args.db_password if args.db_password is not None else (parsed.password or "")
+            host_part = f"{parsed.hostname}:{parsed.port}" if parsed.port else (parsed.hostname or "")
+            netloc = f"{user}:{password}@{host_part}" if (user or password) else host_part
+            db_url = urlunparse(parsed._replace(netloc=netloc))
+
+        ssl_cert = _resolve_cert(args.ssl_cert, base / "certs" / "client.pem")
+        ssl_key = _resolve_cert(args.ssl_key, base / "certs" / "client-key.pem")
+        ssl_rootcert = _resolve_cert(args.ssl_rootcert, base / "certs" / "ca.pem")
+        conn = get_db_connection(db_url, ssl_cert, ssl_key, ssl_rootcert)
         try:
             tables = load_all_tables(conn, schema_config)
         finally:
             conn.close()
     else:
-        print("Error: --jdbc-url or DATABASE_JDBC_URL required (use --dry-run for empty reports)")
+        print("Error: --db-url or DATABASE_URL required (use --dry-run for empty reports)")
         return 1
 
     dashboards = [

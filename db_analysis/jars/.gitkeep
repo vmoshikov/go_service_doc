@@ -1,1 +1,1 @@
-# Place postgresql-42.x.x.jar here for JDBC mTLS connection
+# JAR-файлы больше не используются (переход на psycopg2)
