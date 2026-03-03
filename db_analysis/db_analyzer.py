@@ -18,19 +18,29 @@ import pandas as pd
 def _sql(period_days: int) -> dict:
     pd_str = str(period_days)
     return {
-        "cr_usage": f"""-- conf.custom_resource: resource_type + version, deleted=False
-SELECT resource_type, version, COUNT(*) AS cluster_count, COUNT(DISTINCT cluster_uid) AS clusters
-FROM conf.custom_resource
-WHERE (deleted IS NULL OR deleted = false)
-  AND modify_ts > now() - interval '{pd_str} days'
-GROUP BY resource_type, version
+        "cr_usage": f"""-- conf.custom_resource: resource_type + version, deleted=False, только живые кластеры
+SELECT cr.resource_type, cr.version, COUNT(DISTINCT cr.cluster_uid) AS cluster_count
+FROM conf.custom_resource cr
+JOIN conf.cluster c ON c.uid = cr.cluster_uid AND c.delete_ts IS NULL
+WHERE (cr.deleted IS NULL OR cr.deleted = false)
+  AND cr.modify_ts > now() - interval '{pd_str} days'
+GROUP BY cr.resource_type, cr.version
 ORDER BY cluster_count DESC;""",
-        "clusters_status": f"""SELECT status, COUNT(*) AS cnt FROM state.cluster_consumption
-WHERE update_ts > now() - interval '{pd_str} days' GROUP BY status;""",
-        "nodes_status": f"""SELECT status, COUNT(*) AS cnt FROM state.node_consumption
-WHERE update_ts > now() - interval '{pd_str} days' GROUP BY status;""",
-        "k8s_version": f"""SELECT k8s_version, COUNT(*) FROM state.cluster_consumption
-WHERE update_ts > now() - interval '{pd_str} days' GROUP BY k8s_version;""",
+        "clusters_status": f"""SELECT cc.status, COUNT(*) AS cnt
+FROM state.cluster_consumption cc
+JOIN conf.cluster c ON c.uid = cc.uid AND c.delete_ts IS NULL
+WHERE cc.update_ts > now() - interval '{pd_str} days'
+GROUP BY cc.status;""",
+        "nodes_status": f"""SELECT nc.status, COUNT(*) AS cnt
+FROM state.node_consumption nc
+JOIN conf.cluster c ON c.uid = nc.cluster_uid AND c.delete_ts IS NULL
+WHERE nc.update_ts > now() - interval '{pd_str} days'
+GROUP BY nc.status;""",
+        "k8s_version": f"""SELECT cc.k8s_version, COUNT(*)
+FROM state.cluster_consumption cc
+JOIN conf.cluster c ON c.uid = cc.uid AND c.delete_ts IS NULL
+WHERE cc.update_ts > now() - interval '{pd_str} days'
+GROUP BY cc.k8s_version;""",
         "ops_state": f"""SELECT state, COUNT(*) FROM operation_v2.operations
 WHERE state_dt > now() - interval '{pd_str} days' GROUP BY state;""",
         "ops_timeline": f"""SELECT DATE(state_dt) AS day,
@@ -38,6 +48,41 @@ WHERE state_dt > now() - interval '{pd_str} days' GROUP BY state;""",
   SUM(CASE WHEN LOWER(state) NOT IN ('success','completed','done') THEN 1 ELSE 0 END) AS failed
 FROM operation_v2.operations WHERE state_dt > now() - interval '{pd_str} days'
 GROUP BY DATE(state_dt) ORDER BY day;""",
+        "tasks_action": f"""SELECT COALESCE(action::text, 'null') AS action, COUNT(*) AS cnt
+FROM operation_v2.tasks WHERE state_dt > now() - interval '{pd_str} days' GROUP BY action ORDER BY cnt DESC;""",
+        "tasks_operator": f"""SELECT COALESCE(operator::text, 'null') AS operator, COUNT(*) AS cnt
+FROM operation_v2.tasks WHERE state_dt > now() - interval '{pd_str} days' GROUP BY operator ORDER BY cnt DESC;""",
+        "tasks_failed_operator": f"""SELECT COALESCE(operator::text, 'null') AS operator, COUNT(*) AS failed_cnt
+FROM operation_v2.tasks WHERE state_dt > now() - interval '{pd_str} days'
+  AND (error_type IS NOT NULL OR error_message IS NOT NULL)
+GROUP BY operator ORDER BY failed_cnt DESC;""",
+        "tasks_per_op": f"""SELECT task_count, COUNT(*) AS operation_count FROM (
+  SELECT operation_id, COUNT(*) AS task_count FROM operation_v2.tasks
+  WHERE state_dt > now() - interval '{pd_str} days' GROUP BY operation_id
+) t GROUP BY task_count ORDER BY task_count;""",
+        "tasks_duration": f"""SELECT COALESCE(action::text, 'null') AS action, COUNT(*) AS cnt,
+  ROUND(AVG(EXTRACT(EPOCH FROM duration)), 2) AS avg_duration_sec
+FROM operation_v2.tasks WHERE state_dt > now() - interval '{pd_str} days' AND duration IS NOT NULL
+GROUP BY action ORDER BY avg_duration_sec DESC NULLS LAST;""",
+        "nodepool_cluster": f"""SELECT c.uid AS cluster_uid, c.short_name, COUNT(np.uid) AS nodepool_count
+FROM conf.cluster c LEFT JOIN conf.nodepool np ON np.cluster_uid = c.uid
+  AND (np.deleted IS NULL OR np.deleted = false)
+WHERE c.delete_ts IS NULL AND c.modify_ts > now() - interval '{pd_str} days'
+GROUP BY c.uid, c.short_name ORDER BY nodepool_count DESC;""",
+        "nodepool_node_type": f"""SELECT COALESCE(np.node_type_code::text, 'null') AS node_type_code, COUNT(*) AS cnt
+FROM conf.nodepool np JOIN conf.cluster c ON c.uid = np.cluster_uid AND c.delete_ts IS NULL
+WHERE (np.deleted IS NULL OR np.deleted = false) AND np.modify_ts > now() - interval '{pd_str} days'
+GROUP BY np.node_type_code ORDER BY cnt DESC;""",
+        "nodes_per_nodepool": f"""SELECT np.uid AS nodepool_uid, np.name AS nodepool_name, COUNT(n.uid) AS node_count
+FROM conf.nodepool np JOIN conf.cluster c ON c.uid = np.cluster_uid AND c.delete_ts IS NULL
+LEFT JOIN state.node n ON n.nodepool_uid = np.uid
+  AND (n.deleted IS NULL OR LOWER(COALESCE(n.deleted::text, '')) NOT IN ('true', '1', 'yes'))
+WHERE (np.deleted IS NULL OR np.deleted = false) AND np.modify_ts > now() - interval '{pd_str} days'
+GROUP BY np.uid, np.name ORDER BY node_count DESC;""",
+        "operators_cluster": f"""SELECT o.cluster_uid, c.short_name, COUNT(*) AS operator_count
+FROM state.operator o JOIN conf.cluster c ON c.uid = o.cluster_uid AND c.delete_ts IS NULL
+WHERE o.start_ts > now() - interval '{pd_str} days'
+GROUP BY o.cluster_uid, c.short_name ORDER BY operator_count DESC;""",
     }
 
 
@@ -83,32 +128,66 @@ def fetch_table(
     columns: str,
     where: str | None,
     period_days: int = 7,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    max_value_column: str | None = None,
 ) -> pd.DataFrame:
-    """Чтение таблицы в DataFrame."""
+    """Чтение таблицы в DataFrame. При from_date/to_date — фильтр по дате вместо period_days."""
     import re
     cols = columns.split(",")
     cols_str = ", ".join(c.strip() for c in cols)
     full_table = f'"{schema}"."{table}"'
     sql = f"SELECT {cols_str} FROM {full_table}"
     if where:
-        where = re.sub(r"interval\s+'\d+\s*hours'", f"interval '{period_days} days'", where, flags=re.I)
+        if from_date and to_date and max_value_column:
+            # Заменяем интервал на явный диапазон дат
+            where = re.sub(
+                rf"{re.escape(max_value_column)}\s*>\s*now\(\)\s*-\s*interval\s+'[^']+'",
+                f"{max_value_column} >= '{from_date}' AND {max_value_column} < '{to_date}'",
+                where,
+                flags=re.I,
+            )
+        else:
+            where = re.sub(r"interval\s+'\d+\s*hours'", f"interval '{period_days} days'", where, flags=re.I)
         sql += f" WHERE {where}"
     return pd.read_sql(sql, engine)
 
 
 def load_all_tables(
-    engine: Any, schema_config: list[dict], period_days: int = 7
+    engine: Any,
+    schema_config: list[dict],
+    period_days: int = 7,
+    from_date: str | None = None,
+    to_date: str | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """Загрузка всех таблиц из конфигурации."""
+    """Загрузка всех таблиц из конфигурации. При from_date+to_date — фильтр по дате."""
+    from datetime import datetime, timedelta
+
+    to_date_excl = None
+    if from_date and to_date:
+        end = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
+        to_date_excl = end.strftime("%Y-%m-%d")
+
     tables = {}
     for item in schema_config:
         schema = item["schema_name"]
         table = item["table_name"]
         columns = item["columns"]
         where = item.get("where")
+        max_col = item.get("max_value_column")
         key = f"{schema}.{table}"
         try:
-            tables[key] = fetch_table(engine, schema, table, columns, where, period_days)
+            tables[key] = fetch_table(
+                engine,
+                schema,
+                table,
+                columns,
+                where,
+                period_days=period_days,
+                from_date=from_date if from_date and to_date_excl else None,
+                to_date=to_date_excl,
+                max_value_column=max_col,
+            )
         except Exception as e:
             print(f"Warning: could not load {key}: {e}")
             tables[key] = pd.DataFrame()
@@ -160,6 +239,7 @@ PALE_PALETTE = [
     "rgba(248, 187, 217, 0.75)", "rgba(225, 190, 231, 0.75)", "rgba(178, 223, 219, 0.75)",
     "rgba(215, 204, 200, 0.75)", "rgba(207, 216, 220, 0.75)",
 ]
+RED_PALETTE = ["rgba(239, 83, 80, 0.85)", "rgba(198, 40, 40, 0.85)", "rgba(183, 28, 28, 0.85)"]
 
 
 def sql_collapse(sql: str) -> str:
@@ -167,9 +247,27 @@ def sql_collapse(sql: str) -> str:
     return f'<details class="sql-collapse"><summary>Показать SQL</summary><pre>{escaped}</pre></details>'
 
 
-def render_chart(chart_id: str, chart_type: str, labels: list, data: list, title: str, sql: str | None = None) -> str:
+def render_chart(
+    chart_id: str,
+    chart_type: str,
+    labels: list,
+    data: list,
+    title: str,
+    sql: str | None = None,
+    red_labels: set | None = None,
+) -> str:
+    """red_labels: доп. метки (error, deleting, Мёртвые и т.п.) для красного оттенка."""
     n = len(data)
-    colors = [PALE_PALETTE[i % len(PALE_PALETTE)] for i in range(n)]
+    red_set = {"error", "deleting", "мёртвые", "неуспешные"}
+    if red_labels:
+        red_set = red_set | {str(s).lower().strip() for s in red_labels}
+    colors = []
+    for i, lbl in enumerate(labels):
+        lbl_lower = str(lbl).lower().strip()
+        if lbl_lower in red_set:
+            colors.append(RED_PALETTE[min(i, len(RED_PALETTE) - 1)])
+        else:
+            colors.append(PALE_PALETTE[i % len(PALE_PALETTE)])
     labels_js = json.dumps(labels)
     data_js = json.dumps(data)
     colors_js = json.dumps(colors)
@@ -186,7 +284,13 @@ def render_chart(chart_id: str, chart_type: str, labels: list, data: list, title
 
 
 def render_chart_multi(chart_id: str, chart_type: str, labels: list, datasets: list[tuple[str, list]], sql: str | None = None) -> str:
-    colors = PALE_PALETTE[: len(datasets)]
+    red_names = {"неуспешные", "failed", "error", "мёртвые"}
+    colors = []
+    for i, (name, _) in enumerate(datasets):
+        if str(name).lower().strip() in red_names:
+            colors.append(RED_PALETTE[0])
+        else:
+            colors.append(PALE_PALETTE[i % len(PALE_PALETTE)])
     ds_json = [{"label": n, "data": d, "backgroundColor": c} for (n, d), c in zip(datasets, colors)]
     labels_js = json.dumps(labels)
     ds_js = json.dumps(ds_json)
@@ -214,11 +318,20 @@ def _no_data(msg: str) -> str:
     return f"<p class='no-data'>{msg}</p>"
 
 
-def build_unified_report(tables: dict[str, pd.DataFrame], period_days: int) -> str:
+def build_unified_report(
+    tables: dict[str, pd.DataFrame],
+    period_days: int,
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> str:
     """Единый HTML-отчёт со всеми разделами, TOC и SQL под каждым графиком."""
     sql = _sql(period_days)
     out = html_header("KaaS — Аналитический отчёт")
     out += "<h1>KaaS — Аналитический отчёт</h1>"
+    if from_date and to_date:
+        out += f"<p class='no-data'>Период: {from_date} — {to_date}</p>"
+    else:
+        out += f"<p class='no-data'>Период: последние {period_days} дней</p>"
     out += """<div class="toc"><h3>Содержание</h3>
 <a href="#cr_usage">1. Custom Resource (resource_type+version, deleted=False)</a><br>
 <a href="#clusters">2. Кластеры и ресурсы</a><br>
@@ -228,19 +341,31 @@ def build_unified_report(tables: dict[str, pd.DataFrame], period_days: int) -> s
 <a href="#config">6. Конфигурация</a><br>
 <a href="#cr_clusters">7. CR по кластерам</a><br>
 <a href="#geography">8. География</a><br>
-<a href="#trends">9. Тренды потребления</a>
+<a href="#trends">9. Тренды потребления</a><br>
+<a href="#tasks">10. Tasks (операции → задачи)</a><br>
+<a href="#nodepool">11. Nodepool и Node</a><br>
+<a href="#operators">12. Операторы по кластерам</a>
 </div>"""
 
-    # 1. Custom Resource: resource_type + version, deleted=False
+    # Не удалённые кластеры (для отчётов текущего состояния)
+    cl = tables.get("conf.cluster", pd.DataFrame())
+    non_deleted_uids = set()
+    if not cl.empty and "uid" in cl.columns and "delete_ts" in cl.columns:
+        non_deleted_uids = set(cl[cl["delete_ts"].isna()]["uid"].astype(str).tolist())
+
+    # 1. Custom Resource: resource_type + version, deleted=False, сортировка по кол-ву живых кластеров
     out += '<div class="section" id="cr_usage"><h2>1. Custom Resource — использование (resource_type + version, deleted=False)</h2>'
     cr = tables.get("conf.custom_resource", pd.DataFrame())
     if not cr.empty and "resource_type" in cr.columns and "version" in cr.columns:
         cr = cr.copy()
         cr = cr[~cr["deleted"].astype(str).str.lower().isin(["true", "1", "yes"])] if "deleted" in cr.columns else cr
+        if non_deleted_uids and "cluster_uid" in cr.columns:
+            cr = cr[cr["cluster_uid"].astype(str).isin(non_deleted_uids)]
         agg = cr.groupby(["resource_type", "version"]).agg(
             cluster_count=("cluster_uid", "nunique"),
             total=("cluster_uid", "count"),
         ).reset_index()
+        agg = agg.sort_values("cluster_count", ascending=False)
         out += agg.to_html(index=False)
         if sql.get("cr_usage"):
             out += sql_collapse(sql["cr_usage"])
@@ -248,11 +373,16 @@ def build_unified_report(tables: dict[str, pd.DataFrame], period_days: int) -> s
         out += _no_data("Нет данных custom_resource.")
     out += "</div>"
 
-    # 2. Кластеры и ресурсы
+    # 2. Кластеры и ресурсы (только не удалённые кластеры)
     out += '<div class="section" id="clusters"><h2>2. Кластеры и ресурсы</h2>'
     cc = tables.get("state.cluster_consumption", pd.DataFrame())
     nc = tables.get("state.node_consumption", pd.DataFrame())
     nd = tables.get("state.node", pd.DataFrame())
+    if non_deleted_uids:
+        if not cc.empty and "uid" in cc.columns:
+            cc = cc[cc["uid"].astype(str).isin(non_deleted_uids)].copy()
+        if not nc.empty and "cluster_uid" in nc.columns:
+            nc = nc[nc["cluster_uid"].astype(str).isin(non_deleted_uids)].copy()
     STATUS_ACTIVE = {"updating", "running", "pending"}
     STATUS_DEAD = {"error", "deleting"}
 
@@ -397,6 +527,97 @@ def build_unified_report(tables: dict[str, pd.DataFrame], period_days: int) -> s
             out += cc.groupby("day")[cols].sum().to_html()
     out += "</div>"
 
+    # 10. Tasks (операции → задачи)
+    out += '<div class="section" id="tasks"><h2>10. Tasks (операции → задачи)</h2>'
+    tasks = tables.get("operation_v2.tasks", pd.DataFrame())
+    if not tasks.empty:
+        if "action" in tasks.columns:
+            by_action = tasks["action"].astype(str).fillna("null").value_counts().head(15)
+            out += "<h3>Tasks по action</h3>" + render_chart(
+                "t_action", "bar", by_action.index.tolist(), by_action.values.tolist(),
+                "Кол-во", sql.get("tasks_action"))
+        if "operator" in tasks.columns:
+            by_op = tasks["operator"].astype(str).fillna("null").value_counts().head(15)
+            out += "<h3>Tasks по operator</h3>" + render_chart(
+                "t_operator", "bar", by_op.index.tolist(), by_op.values.tolist(),
+                "Кол-во", sql.get("tasks_operator"))
+        if "operator" in tasks.columns and ("error_type" in tasks.columns or "error_message" in tasks.columns):
+            failed = tasks[
+                tasks["error_type"].notna() | tasks["error_message"].notna()
+            ]["operator"].astype(str).fillna("null").value_counts().head(15)
+            if not failed.empty:
+                out += "<h3>Failed tasks по operator</h3>" + render_chart(
+                    "t_failed", "bar", failed.index.tolist(), failed.values.tolist(),
+                    "Кол-во", sql.get("tasks_failed_operator"))
+        if "operation_id" in tasks.columns:
+            per_op = tasks.groupby("operation_id").size()
+            dist = per_op.value_counts().sort_index().head(20)
+            out += "<h3>Tasks на операцию (распределение)</h3>" + render_chart(
+                "t_per_op", "bar", [str(x) for x in dist.index], dist.values.tolist(),
+                "Операций", sql.get("tasks_per_op"))
+        if "action" in tasks.columns and "duration" in tasks.columns:
+            td = tasks[tasks["duration"].notna()].copy()
+            td["_sec"] = pd.to_timedelta(td["duration"].astype(str), errors="coerce").dt.total_seconds()
+            td = td[td["_sec"].notna()]
+            if not td.empty:
+                dur = td.groupby("action")["_sec"].mean().round(2)
+                out += "<h3>Средняя длительность (сек) по action</h3>" + render_chart(
+                    "t_dur", "bar", dur.index.astype(str).tolist(), dur.values.astype(float).tolist(),
+                    "Сек", sql.get("tasks_duration"))
+    else:
+        out += _no_data("Нет данных tasks.")
+    out += "</div>"
+
+    # 11. Nodepool и Node
+    out += '<div class="section" id="nodepool"><h2>11. Nodepool и Node</h2>'
+    np_df = tables.get("conf.nodepool", pd.DataFrame())
+    nd = tables.get("state.node", pd.DataFrame())
+    if not np_df.empty:
+        np_df = np_df.copy()
+        if non_deleted_uids and "cluster_uid" in np_df.columns:
+            np_df = np_df[np_df["cluster_uid"].astype(str).isin(non_deleted_uids)]
+        if "deleted" in np_df.columns:
+            np_df = np_df[~np_df["deleted"].astype(str).str.lower().isin(["true", "1", "yes"])]
+        if not np_df.empty and "cluster_uid" in np_df.columns:
+            by_cl = np_df.groupby("cluster_uid").size().reset_index(name="nodepool_count")
+            if not cl.empty:
+                by_cl = by_cl.merge(cl[["uid", "short_name"]], left_on="cluster_uid", right_on="uid", how="left")
+            out += "<h3>Nodepool по кластерам</h3>" + by_cl.head(20).to_html(index=False)
+            if sql.get("nodepool_cluster"):
+                out += sql_collapse(sql["nodepool_cluster"])
+        if "node_type_code" in np_df.columns:
+            by_type = np_df["node_type_code"].astype(str).fillna("null").value_counts().head(15)
+            out += "<h3>Node type distribution</h3>" + render_chart(
+                "np_type", "bar", by_type.index.tolist(), by_type.values.tolist(),
+                "Кол-во", sql.get("nodepool_node_type"))
+        if not nd.empty and "nodepool_uid" in nd.columns:
+            nd_active = nd[~nd["deleted"].astype(str).str.lower().isin(["true", "1", "yes"])] if "deleted" in nd.columns else nd
+            by_np = nd_active.groupby("nodepool_uid").size().reset_index(name="node_count")
+            if not np_df.empty:
+                by_np = by_np.merge(np_df[["uid", "name"]], left_on="nodepool_uid", right_on="uid", how="left")
+            out += "<h3>Nodes по nodepool</h3>" + by_np.head(20).to_html(index=False)
+            if sql.get("nodes_per_nodepool"):
+                out += sql_collapse(sql["nodes_per_nodepool"])
+    else:
+        out += _no_data("Нет данных nodepool.")
+    out += "</div>"
+
+    # 12. Операторы по кластерам
+    out += '<div class="section" id="operators"><h2>12. Операторы по кластерам</h2>'
+    op = tables.get("state.operator", pd.DataFrame())
+    if not op.empty and "cluster_uid" in op.columns:
+        if non_deleted_uids:
+            op = op[op["cluster_uid"].astype(str).isin(non_deleted_uids)]
+        by_cl = op.groupby("cluster_uid").size().reset_index(name="operator_count")
+        if not cl.empty:
+            by_cl = by_cl.merge(cl[["uid", "short_name"]], left_on="cluster_uid", right_on="uid", how="left")
+        out += by_cl.head(25).to_html(index=False)
+        if sql.get("operators_cluster"):
+            out += sql_collapse(sql["operators_cluster"])
+    else:
+        out += _no_data("Нет данных operator.")
+    out += "</div>"
+
     out += html_footer()
     return out
 
@@ -412,6 +633,8 @@ def main():
     parser.add_argument("--ssl-rootcert", default=os.environ.get("DB_SSL_ROOTCERT"), help="Path to CA cert (mTLS)")
     parser.add_argument("--output", default="reports", help="Output directory")
     parser.add_argument("--period-days", type=int, default=7, help="Период загрузки в днях")
+    parser.add_argument("--from-date", help="Начало периода (YYYY-MM-DD), взаимоисключающе с --period-days")
+    parser.add_argument("--to-date", help="Конец периода (YYYY-MM-DD), включительно")
     parser.add_argument("--dry-run", action="store_true", help="Empty data, no DB")
     args = parser.parse_args()
 
@@ -422,6 +645,13 @@ def main():
 
     schema_config = load_schema(config_path)
     tables: dict[str, pd.DataFrame] = {}
+    from_date, to_date = args.from_date, args.to_date
+    if from_date and not to_date:
+        print("Warning: --from-date без --to-date, игнорирую")
+        from_date = to_date = None
+    if to_date and not from_date:
+        print("Warning: --to-date без --from-date, игнорирую")
+        from_date = to_date = None
 
     if args.dry_run:
         for item in schema_config:
@@ -441,14 +671,17 @@ def main():
             args.db_url = urlunparse(p._replace(netloc=np))
         engine = get_db_engine(args.db_url, ssl_cert, ssl_key, ssl_rootcert)
         try:
-            tables = load_all_tables(engine, schema_config, args.period_days)
+            tables = load_all_tables(
+                engine, schema_config, args.period_days,
+                from_date=from_date, to_date=to_date,
+            )
         finally:
             engine.dispose()
     else:
         print("Error: --db-url or DATABASE_URL required (use --dry-run)")
         return 1
 
-    html = build_unified_report(tables, args.period_days)
+    html = build_unified_report(tables, args.period_days, from_date, to_date)
     out_path = output_dir / "report.html"
     out_path.write_text(html, encoding="utf-8")
     print(f"Written {out_path}")
