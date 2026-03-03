@@ -1,0 +1,78 @@
+[
+  {
+    "schema_name": "conf",
+    "table_name": "cluster",
+    "columns": "uid, name, as_id, shared, deleter, product, version, create_ts, delete_ts, modify_ts, di_area_id, short_name, description, di_group_id, di_stand_id, old_version, cluster_group, admins_user_id, create_user_id, update_user_id, cluster_type_code, operators_version, dedicated_parent_uid, no_background_updates, operators_helm_version",
+    "max_value_column": "modify_ts",
+    "where": "modify_ts > now() - interval '24 hours'"
+  },
+  {
+    "schema_name": "conf",
+    "table_name": "nodepool",
+    "columns": "uid, name, labels, deleted, create_ts, modify_ts, node_count, cluster_uid, user_labels, node_type_code, schedule_new_nodes",
+    "max_value_column": "modify_ts",
+    "where": "modify_ts > now() - interval '24 hours'"
+  },
+  {
+    "schema_name": "state",
+    "table_name": "node",
+    "columns": "uid, name, evict, labels, deleted, create_ts, modify_ts, requested, schedulable, user_labels, nodepool_uid",
+    "max_value_column": "modify_ts",
+    "where": "modify_ts > now() - interval '24 hours'"
+  },
+  {
+    "schema_name": "state",
+    "table_name": "resource",
+    "columns": "uid, status, create_ts, status_ts, error_text, error_count, operator_ts, operator_data, operator_uuid",
+    "max_value_column": "operator_ts",
+    "where": "operator_ts > now() - interval '24 hours'"
+  },
+  {
+    "schema_name": "state",
+    "table_name": "operator",
+    "columns": "name, uuid, version, start_ts, parent_uid, cluster_uid, features_list, operator_type",
+    "max_value_column": "start_ts",
+    "where": "start_ts > now() - interval '24 hours'"
+  },
+  {
+    "schema_name": "conf",
+    "table_name": "admins",
+    "columns": "admins, cluster_uid",
+    "where": "cluster_uid is not null"
+  },
+  {
+    "schema_name": "conf",
+    "table_name": "custom_resource",
+    "columns": "uid, deleted, version, create_ts, modify_ts, key_values, cluster_uid, resource_type, resource_state",
+    "max_value_column": "modify_ts",
+    "where": "modify_ts > now() - interval '24 hours'"
+  },
+  {
+    "schema_name": "operation_v2",
+    "table_name": "operations",
+    "columns": "id, data, type, state, checks, user_id, pipeline, state_dt, create_dt, cluster_id, error_type, external_id, error_message, confirmation_id",
+    "max_value_column": "state_dt",
+    "where": "state_dt > now() - interval '24 hours'"
+  },
+  {
+    "schema_name": "operation_v2",
+    "table_name": "tasks",
+    "columns": "id, data, state, action, duration, operator, priority, state_dt, create_dt, object_id, cluster_id, error_type, execute_dt, result_data, operation_id, error_message",
+    "max_value_column": "state_dt",
+    "where": "state_dt > now() - interval '24 hours'"
+  },
+  {
+    "schema_name": "state",
+    "table_name": "cluster_consumption",
+    "columns": "uid, name, as_id, region, status, geo_zone, net_name, cpu_error, cpu_other, cpu_total, create_ts, nod_error, nod_other, nod_total, ram_error, ram_other, ram_total, update_ts, cluster_ci, di_area_id, short_name, cpu_running, di_group_id, di_stand_id, environment, k8s_version, nod_running, ram_running, cpu_error_vmware, cpu_other_vmware, cpu_total_vmware, nod_error_vmware, nod_other_vmware, nod_total_vmware, ram_error_vmware, ram_other_vmware, ram_total_vmware, cluster_type_code, cpu_running_vmware, nod_running_vmware, ram_running_vmware, cpu_error_preevostack, cpu_other_preevostack, cpu_total_preevostack, nod_error_preevostack, nod_other_preevostack, nod_total_preevostack, ram_error_preevostack, ram_other_preevostack, ram_total_preevostack, cpu_running_preevostack, nod_running_preevostack, ram_running_preevostack",
+    "max_value_column": "update_ts",
+    "where": "update_ts > now() - interval '24 hours'"
+  },
+  {
+    "schema_name": "state",
+    "table_name": "node_consumption",
+    "columns": "ci, cpu, ram, uid, disk, name, as_id, flavor, region, status, area_id, geo_zone, group_id, stand_id, create_ts, update_ts, cluster_ci, error_text, ip_address, cluster_uid, environment, network_zone, virtualization, cluster_type_code, cluster_short_name, cluster_k8s_version, on_dedicated_resources",
+    "max_value_column": "update_ts",
+    "where": "update_ts > now() - interval '24 hours'"
+  }
+]
