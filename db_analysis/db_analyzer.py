@@ -245,8 +245,8 @@ def dashboard_clusters_resources(tables: dict[str, pd.DataFrame]) -> str:
 
     if not nc.empty or not nd.empty:
         if not nd.empty and "deleted" in nd.columns:
-            nd_deleted = int(nd["deleted"].astype(str).str.lower().isin(["true", "1", "yes"]).sum())
-            nd_active = len(nd) - nd_deleted
+            nd_dead = int(nd["deleted"].astype(str).str.lower().isin(["true", "1", "yes"]).sum())
+            nd_active = len(nd) - nd_dead
             nd_total = len(nd)
         elif not nc.empty and "status" in nc.columns:
             status_lower = nc["status"].astype(str).str.lower().str.strip()
