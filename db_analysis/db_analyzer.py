@@ -108,6 +108,10 @@ def html_header(title: str) -> str:
         th {{ background: #f0f0f0; font-weight: 600; }}
         .kpi {{ font-size: 2rem; font-weight: bold; color: #2e7d32; }}
         .no-data {{ color: #888; font-style: italic; padding: 1rem; }}
+        .kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin: 1rem 0; }}
+        .kpi-card {{ background: white; padding: 1rem; border-radius: 8px; text-align: center; }}
+        .kpi-card .value {{ font-size: 1.5rem; font-weight: bold; }}
+        .kpi-card .label {{ font-size: 0.85rem; color: #666; }}
     </style>
 </head>
 <body>
@@ -118,8 +122,22 @@ def html_footer() -> str:
     return "</body>\n</html>"
 
 
+PALE_PALETTE = [
+    "rgba(179, 229, 252, 0.75)",  # light blue
+    "rgba(200, 230, 201, 0.75)",  # light green
+    "rgba(255, 236, 179, 0.75)",  # light amber
+    "rgba(248, 187, 217, 0.75)",  # light pink
+    "rgba(225, 190, 231, 0.75)",  # light purple
+    "rgba(178, 223, 219, 0.75)",  # teal
+    "rgba(215, 204, 200, 0.75)",  # warm grey
+    "rgba(207, 216, 220, 0.75)",  # blue grey
+]
+
+
 def render_chart(chart_id: str, chart_type: str, labels: list, data: list, title: str) -> str:
-    """Генерация HTML + JS для Chart.js."""
+    """Генерация HTML + JS для Chart.js с бледной палитрой."""
+    n = len(data)
+    colors = [PALE_PALETTE[i % len(PALE_PALETTE)] for i in range(n)]
     return f"""
 <div class="chart-container">
     <canvas id="{chart_id}"></canvas>
@@ -131,9 +149,41 @@ def render_chart(chart_id: str, chart_type: str, labels: list, data: list, title
         type: '{chart_type}',
         data: {{
             labels: {json.dumps(labels)},
-            datasets: [{{ label: '{title}', data: {json.dumps(data)}, backgroundColor: 'rgba(54, 162, 235, 0.5)' }}]
+            datasets: [{{ label: '{title}', data: {json.dumps(data)}, backgroundColor: {json.dumps(colors)} }}]
         }},
         options: {{ responsive: true, maintainAspectRatio: false }}
+    }});
+}})();
+</script>
+"""
+
+
+def render_chart_multi(
+    chart_id: str,
+    chart_type: str,
+    labels: list,
+    datasets: list[tuple[str, list]],
+) -> str:
+    """Генерация Chart.js с несколькими наборами данных (stacked bar/line)."""
+    colors = PALE_PALETTE[: len(datasets)]
+    ds_json = [
+        {"label": name, "data": data, "backgroundColor": color}
+        for (name, data), color in zip(datasets, colors)
+    ]
+    return f"""
+<div class="chart-container">
+    <canvas id="{chart_id}"></canvas>
+</div>
+<script>
+(function() {{
+    const ctx = document.getElementById('{chart_id}');
+    new Chart(ctx, {{
+        type: '{chart_type}',
+        data: {{
+            labels: {json.dumps(labels)},
+            datasets: {json.dumps(ds_json)}
+        }},
+        options: {{ responsive: true, maintainAspectRatio: false, scales: {{ x: {{ stacked: true }}, y: {{ stacked: true }} }} }}
     }});
 }})();
 </script>
@@ -144,6 +194,11 @@ def _no_data(msg: str = "Нет данных за период.") -> str:
     return f"<p class='no-data'>{msg}</p>"
 
 
+def _kpi_card(label: str, value: int | str) -> str:
+    """KPI-карточка для агрегатов."""
+    return f"<div class='kpi-card'><div class='value'>{value}</div><div class='label'>{label}</div></div>"
+
+
 def dashboard_clusters_resources(tables: dict[str, pd.DataFrame]) -> str:
     """Дашборд: Кластеры и ресурсы."""
     out = html_header("Кластеры и ресурсы")
@@ -152,7 +207,57 @@ def dashboard_clusters_resources(tables: dict[str, pd.DataFrame]) -> str:
     cc = tables.get("state.cluster_consumption", pd.DataFrame())
     nc = tables.get("state.node_consumption", pd.DataFrame())
     cl = tables.get("conf.cluster", pd.DataFrame())
+    nd = tables.get("state.node", pd.DataFrame())
     has_content = False
+
+    # Агрегаты: кластеры и ноды, активные/мёртвые
+    if not cc.empty or not cl.empty:
+        if not cc.empty and "status" in cc.columns:
+            status_lower = cc["status"].astype(str).str.lower()
+            cc_active = int((~status_lower.str.contains("error|fail|dead", na=False)).sum())
+            cc_dead = int(status_lower.str.contains("error|fail|dead", na=False).sum())
+            cc_total = len(cc)
+        elif not cl.empty and "delete_ts" in cl.columns:
+            cc_active = int(cl["delete_ts"].isna().sum())
+            cc_dead = int(cl["delete_ts"].notna().sum())
+            cc_total = len(cl)
+        else:
+            cc_total = len(cc) if not cc.empty else len(cl)
+            cc_active = cc_total
+            cc_dead = 0
+        out += "<h2>Кластеры</h2>"
+        out += "<div class='kpi-grid'>"
+        out += _kpi_card("Всего", cc_total)
+        out += _kpi_card("Активных", cc_active)
+        out += _kpi_card("Мёртвых", cc_dead)
+        out += "</div>"
+        if cc_total > 0:
+            out += render_chart("chart_clusters", "pie", ["Активные", "Мёртвые"], [cc_active, cc_dead], "Кластеры")
+        has_content = True
+
+    if not nc.empty or not nd.empty:
+        if not nd.empty and "deleted" in nd.columns:
+            nd_deleted = int(nd["deleted"].astype(str).str.lower().isin(["true", "1", "yes"]).sum())
+            nd_active = len(nd) - nd_deleted
+            nd_total = len(nd)
+        elif not nc.empty and "status" in nc.columns:
+            status_lower = nc["status"].astype(str).str.lower()
+            nd_active = int((~status_lower.str.contains("error|fail|dead", na=False)).sum())
+            nd_dead = int(status_lower.str.contains("error|fail|dead", na=False).sum())
+            nd_total = len(nc)
+        else:
+            nd_total = len(nc) if not nc.empty else len(nd)
+            nd_active = nd_total
+            nd_dead = 0
+        out += "<h2>Ноды</h2>"
+        out += "<div class='kpi-grid'>"
+        out += _kpi_card("Всего", nd_total)
+        out += _kpi_card("Активных", nd_active)
+        out += _kpi_card("Мёртвых", nd_dead)
+        out += "</div>"
+        if nd_total > 0:
+            out += render_chart("chart_nodes", "pie", ["Активные", "Мёртвые"], [nd_active, nd_dead], "Ноды")
+        has_content = True
 
     if not cc.empty and "k8s_version" in cc.columns:
         v = cc["k8s_version"].value_counts().head(10)
@@ -428,6 +533,96 @@ def dashboard_consumption_trends(tables: dict[str, pd.DataFrame]) -> str:
     return out
 
 
+def dashboard_operations_timeline(tables: dict[str, pd.DataFrame]) -> str:
+    """Дашборд: Успешные / неуспешные операции на временной шкале."""
+    out = html_header("Операции: успешные / неуспешные по дням")
+    out += "<h1>Операции на временной шкале</h1>"
+
+    ops = tables.get("operation_v2.operations", pd.DataFrame())
+    has_content = False
+
+    if not ops.empty and "state_dt" in ops.columns and "state" in ops.columns:
+        ops = ops.copy()
+        ops["day"] = pd.to_datetime(ops["state_dt"]).dt.date
+        success_states = ["success", "completed", "done"]
+        ops["is_success"] = ops["state"].astype(str).str.lower().isin(success_states)
+
+        daily = ops.groupby("day").agg(
+            success=("is_success", "sum"),
+            failed=("is_success", lambda x: (~x).sum()),
+        ).reset_index()
+
+        if not daily.empty:
+            labels = [str(d) for d in daily["day"]]
+            datasets = [
+                ("Успешные", daily["success"].astype(int).tolist()),
+                ("Неуспешные", daily["failed"].astype(int).tolist()),
+            ]
+            out += "<h2>Успешные / неуспешные операции по дням</h2>"
+            out += render_chart_multi("chart_timeline", "bar", labels, datasets)
+            out += "<h2>Данные по дням</h2>"
+            out += daily.to_html(index=False)
+            has_content = True
+
+    if not has_content:
+        out += _no_data("Нет данных operations. Увеличьте --period-days.")
+
+    out += html_footer()
+    return out
+
+
+def dashboard_cr_per_cluster(tables: dict[str, pd.DataFrame]) -> str:
+    """Дашборд: CR установленные на каждый кластер."""
+    out = html_header("Custom Resources по кластерам")
+    out += "<h1>CR установленные на кластеры</h1>"
+
+    cr = tables.get("conf.custom_resource", pd.DataFrame())
+    cl = tables.get("conf.cluster", pd.DataFrame())
+    has_content = False
+
+    if not cr.empty and "cluster_uid" in cr.columns and "resource_type" in cr.columns and "version" in cr.columns:
+        cr = cr.copy()
+        cr["cr_version"] = cr["resource_type"] + " @ " + cr["version"].astype(str)
+        if "deleted" in cr.columns:
+            cr = cr[~cr["deleted"].astype(str).str.lower().isin(["true", "1", "yes"])]
+
+        cluster_crs = cr.groupby("cluster_uid").agg(
+            cr_list=("cr_version", lambda x: ", ".join(sorted(set(x)))),
+            cr_count=("resource_type", "nunique"),
+        ).reset_index()
+
+        if not cl.empty and "uid" in cl.columns and "short_name" in cl.columns:
+            cluster_crs = cluster_crs.merge(
+                cl[["uid", "short_name", "name"]],
+                left_on="cluster_uid",
+                right_on="uid",
+                how="left",
+            )
+            cols = ["short_name", "name", "cr_count", "cr_list"]
+            cols = [c for c in cols if c in cluster_crs.columns]
+            out += "<h2>CR по кластерам</h2>"
+            out += cluster_crs[cols].to_html(index=False)
+            has_content = True
+        else:
+            out += "<h2>CR по кластерам</h2>"
+            out += cluster_crs.to_html(index=False)
+            has_content = True
+
+        cr_by_type = cr.groupby(["resource_type", "version"]).agg(
+            cluster_count=("cluster_uid", "nunique"),
+            clusters=("cluster_uid", lambda x: ", ".join(sorted(set(str(u) for u in x)))),
+        ).reset_index()
+        out += "<h2>Установки CR: тип и версия → кластеры</h2>"
+        out += cr_by_type.to_html(index=False)
+        has_content = True
+
+    if not has_content:
+        out += _no_data("Нет данных custom_resource. Увеличьте --period-days.")
+
+    out += html_footer()
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description="KaaS DB Analyzer")
     parser.add_argument("--config", default="db_schema.json", help="Path to db_schema.json")
@@ -487,8 +682,10 @@ def main():
     dashboards = [
         ("clusters_resources.html", dashboard_clusters_resources),
         ("operations_slo.html", dashboard_operations_slo),
+        ("operations_timeline.html", dashboard_operations_timeline),
         ("errors.html", dashboard_errors),
         ("config.html", dashboard_config),
+        ("cr_per_cluster.html", dashboard_cr_per_cluster),
         ("geography.html", dashboard_geography),
         ("consumption_trends.html", dashboard_consumption_trends),
     ]

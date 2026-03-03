@@ -30,6 +30,8 @@
 | 06_consumption_trends.sql | Q1 | Line | Тренды потребления |
 | 06_consumption_trends.sql | Q2 | Line | Тренды потребления |
 | 06_consumption_trends.sql | Q3 | Area | Тренды потребления |
+| 07_operations_timeline.sql | Q1 | Stacked Bar | Операции: успешные/неуспешные по дням |
+| 08_cr_per_cluster.sql | Q1, Q2 | Table | CR по кластерам |
 
 ## Подключение к BI
 
