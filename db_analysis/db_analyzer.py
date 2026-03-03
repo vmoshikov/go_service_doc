@@ -210,12 +210,16 @@ def dashboard_clusters_resources(tables: dict[str, pd.DataFrame]) -> str:
     nd = tables.get("state.node", pd.DataFrame())
     has_content = False
 
+    # Статусы: Updating, Running, Error, Pending, Deleting
+    STATUS_ACTIVE = {"updating", "running", "pending"}
+    STATUS_DEAD = {"error", "deleting"}
+
     # Агрегаты: кластеры и ноды, активные/мёртвые
     if not cc.empty or not cl.empty:
         if not cc.empty and "status" in cc.columns:
-            status_lower = cc["status"].astype(str).str.lower()
-            cc_active = int((~status_lower.str.contains("error|fail|dead", na=False)).sum())
-            cc_dead = int(status_lower.str.contains("error|fail|dead", na=False).sum())
+            status_lower = cc["status"].astype(str).str.lower().str.strip()
+            cc_active = int(status_lower.isin(STATUS_ACTIVE).sum())
+            cc_dead = int(status_lower.isin(STATUS_DEAD).sum())
             cc_total = len(cc)
         elif not cl.empty and "delete_ts" in cl.columns:
             cc_active = int(cl["delete_ts"].isna().sum())
@@ -233,6 +237,10 @@ def dashboard_clusters_resources(tables: dict[str, pd.DataFrame]) -> str:
         out += "</div>"
         if cc_total > 0:
             out += render_chart("chart_clusters", "pie", ["Активные", "Мёртвые"], [cc_active, cc_dead], "Кластеры")
+        if not cc.empty and "status" in cc.columns:
+            by_status = cc["status"].astype(str).str.strip().value_counts()
+            out += "<h2>Кластеры по статусу</h2>"
+            out += render_chart("chart_clusters_status", "bar", by_status.index.tolist(), by_status.values.tolist(), "Кол-во")
         has_content = True
 
     if not nc.empty or not nd.empty:
@@ -241,9 +249,9 @@ def dashboard_clusters_resources(tables: dict[str, pd.DataFrame]) -> str:
             nd_active = len(nd) - nd_deleted
             nd_total = len(nd)
         elif not nc.empty and "status" in nc.columns:
-            status_lower = nc["status"].astype(str).str.lower()
-            nd_active = int((~status_lower.str.contains("error|fail|dead", na=False)).sum())
-            nd_dead = int(status_lower.str.contains("error|fail|dead", na=False).sum())
+            status_lower = nc["status"].astype(str).str.lower().str.strip()
+            nd_active = int(status_lower.isin(STATUS_ACTIVE).sum())
+            nd_dead = int(status_lower.isin(STATUS_DEAD).sum())
             nd_total = len(nc)
         else:
             nd_total = len(nc) if not nc.empty else len(nd)
@@ -257,6 +265,10 @@ def dashboard_clusters_resources(tables: dict[str, pd.DataFrame]) -> str:
         out += "</div>"
         if nd_total > 0:
             out += render_chart("chart_nodes", "pie", ["Активные", "Мёртвые"], [nd_active, nd_dead], "Ноды")
+        if not nc.empty and "status" in nc.columns:
+            by_status = nc["status"].astype(str).str.strip().value_counts()
+            out += "<h2>Ноды по статусу</h2>"
+            out += render_chart("chart_nodes_status", "bar", by_status.index.tolist(), by_status.values.tolist(), "Кол-во")
         has_content = True
 
     if not cc.empty and "k8s_version" in cc.columns:

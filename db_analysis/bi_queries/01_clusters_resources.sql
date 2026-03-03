@@ -3,17 +3,17 @@
 -- =============================================================================
 
 -- Q0: KPI — Агрегаты кластеров и нод (активные/мёртвые)
+-- Статусы: Updating, Running, Error, Pending, Deleting
+-- Активные: Running, Updating, Pending. Мёртвые: Error, Deleting
 -- Chart: KPI / Table
--- Кластеры (по cluster_consumption.status)
 SELECT 'clusters' AS entity,
        COUNT(*) AS total,
-       SUM(CASE WHEN status IS NULL OR (status NOT ILIKE '%error%' AND status NOT ILIKE '%fail%' AND status NOT ILIKE '%dead%') THEN 1 ELSE 0 END) AS active,
-       SUM(CASE WHEN status ILIKE '%error%' OR status ILIKE '%fail%' OR status ILIKE '%dead%' THEN 1 ELSE 0 END) AS dead
+       SUM(CASE WHEN LOWER(TRIM(status)) IN ('running', 'updating', 'pending') THEN 1 ELSE 0 END) AS active,
+       SUM(CASE WHEN LOWER(TRIM(status)) IN ('error', 'deleting') THEN 1 ELSE 0 END) AS dead
 FROM state.cluster_consumption
 WHERE update_ts > COALESCE(:period_start, now() - interval '24 hours')
   AND update_ts < COALESCE(:period_end, now())
 UNION ALL
--- Ноды (по node.deleted)
 SELECT 'nodes' AS entity,
        COUNT(*) AS total,
        SUM(CASE WHEN deleted IS NULL OR deleted = false OR LOWER(COALESCE(deleted::text, '')) NOT IN ('true', '1', 'yes') THEN 1 ELSE 0 END) AS active,
@@ -21,6 +21,22 @@ SELECT 'nodes' AS entity,
 FROM state.node
 WHERE modify_ts > COALESCE(:period_start, now() - interval '24 hours')
   AND modify_ts < COALESCE(:period_end, now());
+
+-- Q0b: Bar — Кластеры по статусу (Updating, Running, Error, Pending, Deleting)
+SELECT status, COUNT(*) AS cnt
+FROM state.cluster_consumption
+WHERE update_ts > COALESCE(:period_start, now() - interval '24 hours')
+  AND update_ts < COALESCE(:period_end, now())
+GROUP BY status
+ORDER BY cnt DESC;
+
+-- Q0c: Bar — Ноды по статусу (из node_consumption)
+SELECT status, COUNT(*) AS cnt
+FROM state.node_consumption
+WHERE update_ts > COALESCE(:period_start, now() - interval '24 hours')
+  AND update_ts < COALESCE(:period_end, now())
+GROUP BY status
+ORDER BY cnt DESC;
 
 -- Q1: Bar — Распределение кластеров по версии K8s
 -- Chart: Bar
