@@ -32,7 +32,8 @@
 | 06_consumption_trends.sql | Q3 | Area | Тренды потребления |
 | 07_operations_timeline.sql | Q1 | Stacked Bar | Операции: успешные/неуспешные по дням |
 | 08_cr_per_cluster.sql | Q1, Q2 | Table | CR по кластерам |
-| 09_export_for_report.sql | 1–6 | CSV | Экспорт: CR, кластеры, ноды, K8s, операции |
+| 09_export_for_report.sql | 1–6 | CSV | Экспорт: CR, кластеры, ноды, K8s, CPU/RAM/NOD, операции |
+| 09_export_for_report.sql | 4a–4h | CSV | CPU/RAM/NOD: суммарно, по type, топ кластеров, по flavor |
 | 09_export_for_report.sql | 7–11 | CSV | Tasks: action, operator, failed, per-op, duration |
 | 09_export_for_report.sql | 12–14 | CSV | Nodepool: по кластерам, node_type, nodes |
 | 09_export_for_report.sql | 15–17 | CSV | Resource, Operator, Admins |

@@ -83,6 +83,50 @@ GROUP BY np.uid, np.name ORDER BY node_count DESC;""",
 FROM state.operator o JOIN conf.cluster c ON c.uid = o.cluster_uid AND c.delete_ts IS NULL
 WHERE o.start_ts > now() - interval '{pd_str} days'
 GROUP BY o.cluster_uid, c.short_name ORDER BY operator_count DESC;""",
+        "cpu_ram_nod_totals": f"""SELECT SUM(cpu_total) AS cpu_total, SUM(ram_total) AS ram_total, SUM(nod_total) AS nod_total,
+  SUM(cpu_running) AS cpu_running, SUM(ram_running) AS ram_running, SUM(nod_running) AS nod_running,
+  SUM(cpu_error) AS cpu_error, SUM(ram_error) AS ram_error, SUM(nod_error) AS nod_error
+FROM state.cluster_consumption cc
+JOIN conf.cluster c ON c.uid = cc.uid AND c.delete_ts IS NULL
+WHERE cc.update_ts > now() - interval '{pd_str} days';""",
+        "cpu_by_type": f"""SELECT cluster_type_code,
+  SUM(cpu_running) AS cpu_running, SUM(cpu_other) AS cpu_other, SUM(cpu_error) AS cpu_error
+FROM state.cluster_consumption cc
+JOIN conf.cluster c ON c.uid = cc.uid AND c.delete_ts IS NULL
+WHERE cc.update_ts > now() - interval '{pd_str} days'
+GROUP BY cluster_type_code;""",
+        "ram_by_type": f"""SELECT cluster_type_code,
+  SUM(ram_running) AS ram_running, SUM(ram_other) AS ram_other, SUM(ram_error) AS ram_error
+FROM state.cluster_consumption cc
+JOIN conf.cluster c ON c.uid = cc.uid AND c.delete_ts IS NULL
+WHERE cc.update_ts > now() - interval '{pd_str} days'
+GROUP BY cluster_type_code;""",
+        "nod_by_type": f"""SELECT cluster_type_code,
+  SUM(nod_running) AS nod_running, SUM(nod_other) AS nod_other, SUM(nod_error) AS nod_error
+FROM state.cluster_consumption cc
+JOIN conf.cluster c ON c.uid = cc.uid AND c.delete_ts IS NULL
+WHERE cc.update_ts > now() - interval '{pd_str} days'
+GROUP BY cluster_type_code;""",
+        "top_cpu": f"""SELECT cc.short_name, cc.cpu_total, cc.cpu_running, cc.cpu_error
+FROM state.cluster_consumption cc
+JOIN conf.cluster c ON c.uid = cc.uid AND c.delete_ts IS NULL
+WHERE cc.update_ts > now() - interval '{pd_str} days'
+ORDER BY cc.cpu_total DESC NULLS LAST LIMIT 15;""",
+        "top_ram": f"""SELECT cc.short_name, cc.ram_total, cc.ram_running, cc.ram_error
+FROM state.cluster_consumption cc
+JOIN conf.cluster c ON c.uid = cc.uid AND c.delete_ts IS NULL
+WHERE cc.update_ts > now() - interval '{pd_str} days'
+ORDER BY cc.ram_total DESC NULLS LAST LIMIT 15;""",
+        "top_nod": f"""SELECT cc.short_name, cc.nod_total, cc.nod_running, cc.nod_error
+FROM state.cluster_consumption cc
+JOIN conf.cluster c ON c.uid = cc.uid AND c.delete_ts IS NULL
+WHERE cc.update_ts > now() - interval '{pd_str} days'
+ORDER BY cc.nod_total DESC NULLS LAST LIMIT 15;""",
+        "node_cpu_ram": f"""SELECT flavor, SUM(cpu) AS cpu_total, SUM(ram) AS ram_total, SUM(disk) AS disk_total
+FROM state.node_consumption nc
+JOIN conf.cluster c ON c.uid = nc.cluster_uid AND c.delete_ts IS NULL
+WHERE nc.update_ts > now() - interval '{pd_str} days'
+GROUP BY flavor;""",
     }
 
 
@@ -421,13 +465,111 @@ def build_unified_report(
     if not cc.empty and "k8s_version" in cc.columns:
         v = cc["k8s_version"].value_counts().head(10)
         out += "<h3>Версии K8s</h3>" + render_chart("c_k8s", "bar", v.index.tolist(), v.values.tolist(), "Кластеры", sql.get("k8s_version"))
+
+    # CPU / RAM / NOD — технические показатели
     if not cc.empty:
+        cpu_cols = [c for c in ["cpu_total", "cpu_running", "ram_total", "ram_running", "nod_total", "nod_running"] if c in cc.columns]
+        if cpu_cols:
+            sums = cc[cpu_cols].sum()
+            out += "<h3>Потребление (суммарно по кластерам)</h3><div class='kpi-grid'>"
+            if "cpu_total" in sums.index:
+                out += _kpi_card("CPU total", int(sums.get("cpu_total", 0)))
+            if "cpu_running" in sums.index:
+                out += _kpi_card("CPU running", int(sums.get("cpu_running", 0)))
+            if "ram_total" in sums.index:
+                out += _kpi_card("RAM total (GB)", int(sums.get("ram_total", 0)))
+            if "ram_running" in sums.index:
+                out += _kpi_card("RAM running (GB)", int(sums.get("ram_running", 0)))
+            if "nod_total" in sums.index:
+                out += _kpi_card("NOD total", int(sums.get("nod_total", 0)))
+            if "nod_running" in sums.index:
+                out += _kpi_card("NOD running", int(sums.get("nod_running", 0)))
+            out += "</div>"
+            if sql.get("cpu_ram_nod_totals"):
+                out += sql_collapse(sql["cpu_ram_nod_totals"])
+
+        # CPU/RAM/NOD breakdown по cluster_type_code (stacked bar)
+        if "cluster_type_code" in cc.columns:
+            ct = cc.groupby("cluster_type_code", dropna=False)
+            if all(c in cc.columns for c in ["cpu_running", "cpu_other", "cpu_error"]):
+                cpu_agg = ct.agg(cpu_running=("cpu_running", "sum"), cpu_other=("cpu_other", "sum"), cpu_error=("cpu_error", "sum")).fillna(0)
+                if not cpu_agg.empty and cpu_agg.sum().sum() > 0:
+                    labels = cpu_agg.index.astype(str).tolist()
+                    out += "<h3>CPU по cluster_type_code (running / other / error)</h3>"
+                    out += render_chart_multi("cpu_stack", "bar", labels,
+                        [("Running", cpu_agg["cpu_running"].astype(int).tolist()),
+                         ("Other", cpu_agg["cpu_other"].astype(int).tolist()),
+                         ("Error", cpu_agg["cpu_error"].astype(int).tolist())],
+                        sql.get("cpu_by_type"))
+            if all(c in cc.columns for c in ["ram_running", "ram_other", "ram_error"]):
+                ram_agg = ct.agg(ram_running=("ram_running", "sum"), ram_other=("ram_other", "sum"), ram_error=("ram_error", "sum")).fillna(0)
+                if not ram_agg.empty and ram_agg.sum().sum() > 0:
+                    labels = ram_agg.index.astype(str).tolist()
+                    out += "<h3>RAM по cluster_type_code (running / other / error)</h3>"
+                    out += render_chart_multi("ram_stack", "bar", labels,
+                        [("Running", ram_agg["ram_running"].astype(int).tolist()),
+                         ("Other", ram_agg["ram_other"].astype(int).tolist()),
+                         ("Error", ram_agg["ram_error"].astype(int).tolist())],
+                        sql.get("ram_by_type"))
+            if all(c in cc.columns for c in ["nod_running", "nod_other", "nod_error"]):
+                nod_agg = ct.agg(nod_running=("nod_running", "sum"), nod_other=("nod_other", "sum"), nod_error=("nod_error", "sum")).fillna(0)
+                if not nod_agg.empty and nod_agg.sum().sum() > 0:
+                    labels = nod_agg.index.astype(str).tolist()
+                    out += "<h3>NOD по cluster_type_code (running / other / error)</h3>"
+                    out += render_chart_multi("nod_stack", "bar", labels,
+                        [("Running", nod_agg["nod_running"].astype(int).tolist()),
+                         ("Other", nod_agg["nod_other"].astype(int).tolist()),
+                         ("Error", nod_agg["nod_error"].astype(int).tolist())],
+                        sql.get("nod_by_type"))
+
+        # Топ кластеров по CPU / RAM / NOD
+        if "short_name" in cc.columns:
+            for metric, col, title in [("cpu", "cpu_total", "CPU"), ("ram", "ram_total", "RAM"), ("nod", "nod_total", "NOD")]:
+                if col in cc.columns:
+                    top = cc.nlargest(15, col)
+                    if not top.empty and top[col].sum() > 0:
+                        out += f"<h3>Топ 15 кластеров по {title}</h3>"
+                        sql_key = "top_cpu" if metric == "cpu" else "top_ram" if metric == "ram" else "top_nod"
+                        out += render_chart(f"top_{metric}", "bar",
+                            top["short_name"].fillna("").astype(str).tolist(),
+                            top[col].astype(int).tolist(), title, sql.get(sql_key))
+
         cols = [c for c in ["cluster_type_code", "cpu_total", "ram_total", "nod_total"] if c in cc.columns]
         if cols:
-            out += "<h3>Потребление по cluster_type_code</h3>" + cc.groupby("cluster_type_code", dropna=False)[cols].sum().to_html()
+            out += "<h3>Потребление по cluster_type_code (таблица)</h3>" + cc.groupby("cluster_type_code", dropna=False)[cols].sum().to_html()
     if not nc.empty and "on_dedicated_resources" in nc.columns:
         d = nc["on_dedicated_resources"].value_counts()
         out += "<h3>Dedicated vs Shared</h3>" + render_chart("c_ded", "pie", [str(x) for x in d.index], d.values.tolist(), "Узлы")
+
+    # Потребление по нодам (CPU, RAM, Disk)
+    if not nc.empty:
+        nc_cols = [c for c in ["cpu", "ram", "disk"] if c in nc.columns]
+        if nc_cols:
+            nc_sums = nc[nc_cols].sum()
+            out += "<h3>Потребление по нодам (суммарно)</h3><div class='kpi-grid'>"
+            for col in nc_cols:
+                out += _kpi_card(f"{col.upper()} total", int(nc_sums.get(col, 0)))
+            out += "</div>"
+        if "flavor" in nc.columns and ("cpu" in nc.columns or "ram" in nc.columns):
+            agg_cols = [c for c in ["cpu", "ram", "disk"] if c in nc.columns]
+            if agg_cols:
+                by_flavor = nc.groupby("flavor", dropna=False)[agg_cols].sum()
+                by_flavor = by_flavor[by_flavor.sum(axis=1) > 0].head(15)
+                if not by_flavor.empty:
+                    out += "<h3>CPU/RAM/Disk по flavor (ноды)</h3>" + by_flavor.to_html()
+                    if sql.get("node_cpu_ram"):
+                        out += sql_collapse(sql["node_cpu_ram"])
+        if "region" in nc.columns and ("cpu" in nc.columns or "ram" in nc.columns):
+            agg_dict = {}
+            if "cpu" in nc.columns:
+                agg_dict["cpu"] = ("cpu", "sum")
+            if "ram" in nc.columns:
+                agg_dict["ram"] = ("ram", "sum")
+            by_reg = nc.groupby("region", dropna=False).agg(**agg_dict).fillna(0) if agg_dict else pd.DataFrame()
+            if not by_reg.empty and by_reg.sum().sum() > 0:
+                by_reg = by_reg.head(15)
+                out += "<h3>CPU/RAM по region (ноды)</h3>" + by_reg.astype(int).to_html()
+
     if not cc.empty and "environment" in cc.columns:
         e = cc["environment"].value_counts()
         out += "<h3>По environment</h3>" + render_chart("c_env", "bar", e.index.astype(str).tolist(), e.values.tolist(), "Кластеры")
