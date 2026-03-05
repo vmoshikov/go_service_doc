@@ -327,7 +327,14 @@ def render_chart(
     return out + (sql_collapse(sql) if sql else "")
 
 
-def render_chart_multi(chart_id: str, chart_type: str, labels: list, datasets: list[tuple[str, list]], sql: str | None = None) -> str:
+def render_chart_multi(
+    chart_id: str,
+    chart_type: str,
+    labels: list,
+    datasets: list[tuple[str, list]],
+    sql: str | None = None,
+    stacked: bool = True,
+) -> str:
     red_names = {"неуспешные", "failed", "error", "мёртвые"}
     colors = []
     for i, (name, _) in enumerate(datasets):
@@ -335,16 +342,23 @@ def render_chart_multi(chart_id: str, chart_type: str, labels: list, datasets: l
             colors.append(RED_PALETTE[0])
         else:
             colors.append(PALE_PALETTE[i % len(PALE_PALETTE)])
-    ds_json = [{"label": n, "data": d, "backgroundColor": c} for (n, d), c in zip(datasets, colors)]
+    ds_list = []
+    for (n, d), c in zip(datasets, colors):
+        if chart_type == "line":
+            ds_list.append({"label": n, "data": d, "borderColor": c, "fill": False})
+        else:
+            ds_list.append({"label": n, "data": d, "backgroundColor": c})
+    ds_json = ds_list
     labels_js = json.dumps(labels)
     ds_js = json.dumps(ds_json)
+    stack_opt = "true" if stacked else "false"
     out = f"""<div class="chart-container"><canvas id="{chart_id}"></canvas></div>
 <script>(function(){{
     const ctx = document.getElementById('{chart_id}');
     new Chart(ctx, {{
         type: '{chart_type}',
         data: {{ labels: {labels_js}, datasets: {ds_js} }},
-        options: {{ responsive: true, maintainAspectRatio: false, scales: {{ x: {{ stacked: true }}, y: {{ stacked: true }} }} }}
+        options: {{ responsive: true, maintainAspectRatio: false, scales: {{ x: {{ stacked: {stack_opt} }}, y: {{ stacked: {stack_opt} }} }} }}
     }});
 }})();</script>"""
     return out + (sql_collapse(sql) if sql else "")
@@ -387,8 +401,7 @@ def build_unified_report(
 <a href="#geography">8. География</a><br>
 <a href="#trends">9. Тренды потребления</a><br>
 <a href="#tasks">10. Tasks (операции → задачи)</a><br>
-<a href="#nodepool">11. Nodepool и Node</a><br>
-<a href="#operators">12. Операторы по кластерам</a>
+<a href="#nodepool">11. Nodepool и Node</a>
 </div>"""
 
     # Не удалённые кластеры (для отчётов текущего состояния)
@@ -534,9 +547,6 @@ def build_unified_report(
                             top["short_name"].fillna("").astype(str).tolist(),
                             top[col].astype(int).tolist(), title, sql.get(sql_key))
 
-        cols = [c for c in ["cluster_type_code", "cpu_total", "ram_total", "nod_total"] if c in cc.columns]
-        if cols:
-            out += "<h3>Потребление по cluster_type_code (таблица)</h3>" + cc.groupby("cluster_type_code", dropna=False)[cols].sum().to_html()
     if not nc.empty and "on_dedicated_resources" in nc.columns:
         d = nc["on_dedicated_resources"].value_counts()
         out += "<h3>Dedicated vs Shared</h3>" + render_chart("c_ded", "pie", [str(x) for x in d.index], d.values.tolist(), "Узлы")
@@ -616,9 +626,11 @@ def build_unified_report(
         out += "<h3>Топ error_type</h3>" + render_chart("e_type", "bar", [x[0] for x in top], [x[1] for x in top], "Кол-во")
     if not res.empty and "operator_uuid" in res.columns:
         agg = res.groupby("operator_uuid").agg({"status": "count", "error_count": "sum"}).reset_index()
+        agg = agg[agg["error_count"].fillna(0) > 0]
         if not op.empty:
             agg = agg.merge(op[["uuid", "name"]], left_on="operator_uuid", right_on="uuid", how="left")
-        out += "<h3>Ресурсы в ошибке по operator</h3>" + agg.to_html(index=False)
+        if not agg.empty:
+            out += "<h3>Ресурсы в ошибке по operator</h3>" + agg.to_html(index=False)
     out += "</div>"
 
     # 6. Конфигурация
@@ -626,31 +638,38 @@ def build_unified_report(
     cr = tables.get("conf.custom_resource", pd.DataFrame())
     cl = tables.get("conf.cluster", pd.DataFrame())
     adm = tables.get("conf.admins", pd.DataFrame())
-    if not cr.empty and "cluster_uid" in cr.columns:
-        cr = cr[~cr["deleted"].astype(str).str.lower().isin(["true", "1", "yes"])] if "deleted" in cr.columns else cr
-        combos = cr.groupby("cluster_uid").apply(lambda x: ", ".join(sorted(set(x["resource_type"] + "@" + x["version"].astype(str))))).reset_index()
-        out += "<h3>CR комбинации на кластер</h3>" + combos.to_html(index=False)
     if not adm.empty:
-        out += "<h3>Админы</h3>" + adm.to_html(index=False)
+        adm_f = adm[adm["admins"].notna() & (adm["admins"].astype(str).str.strip() != "")]
+        if not adm_f.empty:
+            out += "<h3>Админы</h3>" + adm_f.to_html(index=False)
     out += "</div>"
 
-    # 7. CR по кластерам
+    # 7. CR по кластерам (одна таблица: uid, short_name, env, di_area_id, cr_list)
     out += '<div class="section" id="cr_clusters"><h2>7. CR по кластерам</h2>'
+    cr = tables.get("conf.custom_resource", pd.DataFrame())
     if not cr.empty and "cluster_uid" in cr.columns:
         cr = cr.copy()
+        cr = cr[~cr["deleted"].astype(str).str.lower().isin(["true", "1", "yes"])] if "deleted" in cr.columns else cr
         cr["cr_v"] = cr["resource_type"] + " @ " + cr["version"].astype(str)
         by_cl = cr.groupby("cluster_uid").agg(cr_list=("cr_v", lambda x: ", ".join(sorted(set(x)))), cr_count=("resource_type", "nunique")).reset_index()
         if not cl.empty:
-            by_cl = by_cl.merge(cl[["uid", "short_name"]], left_on="cluster_uid", right_on="uid", how="left")
-        out += by_cl.to_html(index=False)
-        by_type = cr.groupby(["resource_type", "version"]).agg(cluster_count=("cluster_uid", "nunique")).reset_index()
-        out += "<h3>Тип+версия → кластеры</h3>" + by_type.to_html(index=False)
+            cl_cols = [c for c in ["uid", "short_name", "di_area_id"] if c in cl.columns]
+            by_cl = by_cl.merge(cl[cl_cols], left_on="cluster_uid", right_on="uid", how="left")
+        cc = tables.get("state.cluster_consumption", pd.DataFrame())
+        if not cc.empty and "uid" in cc.columns and "environment" in cc.columns:
+            env_df = cc.drop_duplicates("uid")[["uid", "environment"]].rename(columns={"uid": "cluster_uid", "environment": "env"})
+            by_cl = by_cl.merge(env_df, on="cluster_uid", how="left")
+        by_cl = by_cl.drop(columns=["uid"], errors="ignore")
+        out += "<h3>CR на кластер (cluster_uid, short_name, env, di_area_id, cr_list)</h3>" + by_cl.to_html(index=False)
         if sql.get("cr_usage"):
             out += sql_collapse(sql["cr_usage"])
     out += "</div>"
 
     # 8. География
     out += '<div class="section" id="geography"><h2>8. География</h2>'
+    cc = tables.get("state.cluster_consumption", pd.DataFrame())
+    if non_deleted_uids and not cc.empty and "uid" in cc.columns:
+        cc = cc[cc["uid"].astype(str).isin(non_deleted_uids)]
     if not cc.empty and "region" in cc.columns and "environment" in cc.columns:
         heat = cc.groupby(["region", "environment"]).size().unstack(fill_value=0)
         out += heat.to_html()
@@ -659,14 +678,33 @@ def build_unified_report(
         out += "<h3>Узлы по region</h3>" + render_chart("g_reg", "bar", r.index.astype(str).tolist(), r.values.tolist(), "Узлы")
     out += "</div>"
 
-    # 9. Тренды потребления
+    # 9. Тренды потребления (линейные графики)
     out += '<div class="section" id="trends"><h2>9. Тренды потребления</h2>'
+    cc = tables.get("state.cluster_consumption", pd.DataFrame())
+    if non_deleted_uids and not cc.empty and "uid" in cc.columns:
+        cc = cc[cc["uid"].astype(str).isin(non_deleted_uids)].copy()
     if not cc.empty and "update_ts" in cc.columns:
         cc = cc.copy()
         cc["day"] = pd.to_datetime(cc["update_ts"]).dt.date
-        cols = [c for c in ["cpu_total", "ram_total", "nod_total"] if c in cc.columns]
-        if cols:
-            out += cc.groupby("day")[cols].sum().to_html()
+        agg_dict = {}
+        if "cpu_total" in cc.columns:
+            agg_dict["cpu_total"] = ("cpu_total", "sum")
+        if "ram_total" in cc.columns:
+            agg_dict["ram_total"] = ("ram_total", "sum")
+        if "nod_total" in cc.columns:
+            agg_dict["nod_total"] = ("nod_total", "sum")
+        daily = cc.groupby("day").agg(**agg_dict).reset_index() if agg_dict else pd.DataFrame()
+        if not daily.empty and "day" in daily.columns:
+            days = [str(d) for d in daily["day"]]
+            ds = []
+            if "cpu_total" in daily.columns:
+                ds.append(("CPU total", daily["cpu_total"].astype(int).tolist()))
+            if "ram_total" in daily.columns:
+                ds.append(("RAM total", daily["ram_total"].astype(int).tolist()))
+            if "nod_total" in daily.columns:
+                ds.append(("NOD total", daily["nod_total"].astype(int).tolist()))
+            if ds:
+                out += render_chart_multi("trends", "line", days, ds, None, stacked=False)
     out += "</div>"
 
     # 10. Tasks (операции → задачи)
@@ -694,7 +732,9 @@ def build_unified_report(
         if "operation_id" in tasks.columns:
             per_op = tasks.groupby("operation_id").size()
             dist = per_op.value_counts().sort_index().head(20)
-            out += "<h3>Tasks на операцию (распределение)</h3>" + render_chart(
+            out += "<h3>Tasks на операцию (распределение)</h3>"
+            out += "<p class='no-data'>Ось X: кол-во задач в одной операции. Ось Y: сколько операций имеют такое кол-во задач.</p>"
+            out += render_chart(
                 "t_per_op", "bar", [str(x) for x in dist.index], dist.values.tolist(),
                 "Операций", sql.get("tasks_per_op"))
         if "action" in tasks.columns and "duration" in tasks.columns:
@@ -723,7 +763,12 @@ def build_unified_report(
         if not np_df.empty and "cluster_uid" in np_df.columns:
             by_cl = np_df.groupby("cluster_uid").size().reset_index(name="nodepool_count")
             if not cl.empty:
-                by_cl = by_cl.merge(cl[["uid", "short_name"]], left_on="cluster_uid", right_on="uid", how="left")
+                cl_cols = [c for c in ["uid", "short_name", "di_area_id"] if c in cl.columns]
+                by_cl = by_cl.merge(cl[cl_cols], left_on="cluster_uid", right_on="uid", how="left")
+            cc = tables.get("state.cluster_consumption", pd.DataFrame())
+            if not cc.empty and "uid" in cc.columns and "environment" in cc.columns:
+                env_df = cc.drop_duplicates("uid")[["uid", "environment"]].rename(columns={"uid": "cluster_uid", "environment": "env"})
+                by_cl = by_cl.merge(env_df, on="cluster_uid", how="left")
             out += "<h3>Nodepool по кластерам</h3>" + by_cl.head(20).to_html(index=False)
             if sql.get("nodepool_cluster"):
                 out += sql_collapse(sql["nodepool_cluster"])
@@ -742,22 +787,6 @@ def build_unified_report(
                 out += sql_collapse(sql["nodes_per_nodepool"])
     else:
         out += _no_data("Нет данных nodepool.")
-    out += "</div>"
-
-    # 12. Операторы по кластерам
-    out += '<div class="section" id="operators"><h2>12. Операторы по кластерам</h2>'
-    op = tables.get("state.operator", pd.DataFrame())
-    if not op.empty and "cluster_uid" in op.columns:
-        if non_deleted_uids:
-            op = op[op["cluster_uid"].astype(str).isin(non_deleted_uids)]
-        by_cl = op.groupby("cluster_uid").size().reset_index(name="operator_count")
-        if not cl.empty:
-            by_cl = by_cl.merge(cl[["uid", "short_name"]], left_on="cluster_uid", right_on="uid", how="left")
-        out += by_cl.head(25).to_html(index=False)
-        if sql.get("operators_cluster"):
-            out += sql_collapse(sql["operators_cluster"])
-    else:
-        out += _no_data("Нет данных operator.")
     out += "</div>"
 
     out += html_footer()
