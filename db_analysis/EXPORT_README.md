@@ -11,12 +11,17 @@ export DATABASE_URL="postgresql://user:pass@host:5432/dbname"
 export DB_SSL_CERT=certs/client.pem DB_SSL_KEY=certs/client-key.pem DB_SSL_ROOTCERT=certs/ca.pem
 
 python export_to_csv.py --output csv_export --period-days 7
+# Или с явным диапазоном дат:
+python export_to_csv.py --from-date 2025-01-01 --to-date 2025-01-31
 ```
 
-**Аргументы:**
-- `--output`, `-o` — директория для CSV (по умолчанию `csv_export`)
-- `--period-days`, `-p` — период в днях (по умолчанию 7)
+**Аргументы (как в db_analyzer.py):**
 - `--db-url` — URL подключения (или `DATABASE_URL`)
+- `--db-user`, `--db-password` — переопределение учётных данных
+- `--ssl-cert`, `--ssl-key`, `--ssl-rootcert` — пути к mTLS сертификатам
+- `--output` — директория для CSV (по умолчанию `csv_export`)
+- `--period-days` — период в днях (по умолчанию 7)
+- `--from-date`, `--to-date` — явный диапазон дат (YYYY-MM-DD)
 
 ## Способ 2: psql вручную
 

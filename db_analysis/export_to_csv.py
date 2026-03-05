@@ -3,17 +3,16 @@
 Экспорт данных для отчёта KaaS в CSV (закрытый контур).
 
 Использование:
-  export DATABASE_URL="postgresql://user:pass@host:5432/dbname"
-  python export_to_csv.py [--output csv_export] [--period-days 7]
-
-  # С mTLS (переменные DB_SSL_CERT, DB_SSL_KEY, DB_SSL_ROOTCERT)
-  python export_to_csv.py --output csv_export
+  python export_to_csv.py --db-url postgresql://user:pass@host:5432/dbname
+  python export_to_csv.py --output csv_export --period-days 7
+  python export_to_csv.py --from-date 2025-01-01 --to-date 2025-01-31
 
 Выход: CSV-файлы в указанной директории.
 """
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -197,60 +196,95 @@ QUERIES = [
 ]
 
 
+def _apply_date_range(sql: str, from_date: str, to_date: str) -> str:
+    """Заменяет interval в SQL на явный диапазон дат."""
+    from datetime import datetime, timedelta
+    end = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
+    to_excl = end.strftime("%Y-%m-%d")
+    for col in ("modify_ts", "update_ts", "state_dt", "operator_ts", "start_ts"):
+        sql = re.sub(
+            rf"{re.escape(col)}\s*>\s*now\(\)\s*-\s*interval\s+'[^']+'",
+            f"{col} >= '{from_date}' AND {col} < '{to_excl}'",
+            sql,
+            flags=re.I,
+        )
+    return sql
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export KaaS report data to CSV")
-    parser.add_argument("--output", "-o", default="csv_export", help="Output directory")
-    parser.add_argument("--period-days", "-p", type=int, default=7, help="Period in days")
-    parser.add_argument("--db-url", default=os.environ.get("DATABASE_URL"), help="PostgreSQL URL")
+    parser.add_argument("--db-url", default=os.environ.get("DATABASE_URL"), help="PostgreSQL connection URL")
+    parser.add_argument("--db-user", default=os.environ.get("DB_USER"), help="DB user")
+    parser.add_argument("--db-password", default=os.environ.get("DB_PASSWORD"), help="DB password")
+    parser.add_argument("--ssl-cert", default=os.environ.get("DB_SSL_CERT"), help="Path to client cert (mTLS)")
+    parser.add_argument("--ssl-key", default=os.environ.get("DB_SSL_KEY"), help="Path to client key (mTLS)")
+    parser.add_argument("--ssl-rootcert", default=os.environ.get("DB_SSL_ROOTCERT"), help="Path to CA cert (mTLS)")
+    parser.add_argument("--output", default="csv_export", help="Output directory")
+    parser.add_argument("--period-days", type=int, default=7, help="Период загрузки в днях")
+    parser.add_argument("--from-date", help="Начало периода (YYYY-MM-DD), взаимоисключающе с --period-days")
+    parser.add_argument("--to-date", help="Конец периода (YYYY-MM-DD), включительно")
     args = parser.parse_args()
 
+    base = Path(__file__).parent
+    output_dir = base / args.output if not Path(args.output).is_absolute() else Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    from_date, to_date = args.from_date, args.to_date
+    if from_date and not to_date:
+        print("Warning: --from-date без --to-date, игнорирую")
+        from_date = to_date = None
+    if to_date and not from_date:
+        print("Warning: --to-date без --from-date, игнорирую")
+        from_date = to_date = None
+
     if not args.db_url:
-        print("Error: DATABASE_URL or --db-url required", file=sys.stderr)
+        print("Error: --db-url or DATABASE_URL required", file=sys.stderr)
         return 1
 
     try:
         import pandas as pd
-        from sqlalchemy import create_engine
     except ImportError:
-        print("Error: pandas and sqlalchemy required. pip install pandas sqlalchemy psycopg2-binary", file=sys.stderr)
+        print("Error: pandas required. pip install pandas sqlalchemy psycopg2-binary", file=sys.stderr)
         return 1
 
-    base = Path(__file__).parent
     sys.path.insert(0, str(base))
-    engine = None
-    ssl_cert = os.environ.get("DB_SSL_CERT") or (base / "certs" / "client.pem")
-    ssl_key = os.environ.get("DB_SSL_KEY") or (base / "certs" / "client-key.pem")
-    ssl_rootcert = os.environ.get("DB_SSL_ROOTCERT") or (base / "certs" / "ca.pem")
-    use_ssl = all(Path(p).exists() for p in (ssl_cert, ssl_key, ssl_rootcert))
-    try:
-        from db_analyzer import get_db_engine
-        engine = get_db_engine(
-            args.db_url,
-            str(ssl_cert) if use_ssl else None,
-            str(ssl_key) if use_ssl else None,
-            str(ssl_rootcert) if use_ssl else None,
-        )
-    except Exception:
-        url = args.db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
-        engine = create_engine(url)
+    from db_analyzer import get_db_engine
 
-    out_dir = Path(args.output)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    def _resolve(p, d):
+        return str(base / p) if p and not Path(p).is_absolute() else (str(d) if d.exists() else None)
+
+    ssl_cert = _resolve(args.ssl_cert, base / "certs" / "client.pem")
+    ssl_key = _resolve(args.ssl_key, base / "certs" / "client-key.pem")
+    ssl_rootcert = _resolve(args.ssl_rootcert, base / "certs" / "ca.pem")
+
+    if args.db_user or args.db_password:
+        from urllib.parse import urlparse, urlunparse
+        p = urlparse(args.db_url)
+        u = args.db_user or p.username or ""
+        pw = args.db_password or p.password or ""
+        np = f"{u}:{pw}@{p.hostname}" + (f":{p.port}" if p.port else "")
+        args.db_url = urlunparse(p._replace(netloc=np))
+
+    engine = get_db_engine(args.db_url, ssl_cert, ssl_key, ssl_rootcert)
+
     params = {"period": str(args.period_days)}
 
-    for name, q in QUERIES:
-        try:
-            sql = q.strip() % params
-            df = pd.read_sql(sql, engine)
-            path = out_dir / f"{name}.csv"
-            df.to_csv(path, index=False, encoding="utf-8")
-            print(f"  {name}.csv ({len(df)} rows)")
-        except Exception as e:
-            print(f"  {name}.csv FAILED: {e}", file=sys.stderr)
-
-    if engine and hasattr(engine, "dispose"):
+    try:
+        for name, q in QUERIES:
+            try:
+                sql = q.strip() % params
+                if from_date and to_date:
+                    sql = _apply_date_range(sql, from_date, to_date)
+                df = pd.read_sql(sql, engine)
+                path = output_dir / f"{name}.csv"
+                df.to_csv(path, index=False, encoding="utf-8")
+                print(f"  {name}.csv ({len(df)} rows)")
+            except Exception as e:
+                print(f"  {name}.csv FAILED: {e}", file=sys.stderr)
+    finally:
         engine.dispose()
-    print(f"Done. CSV files in {out_dir}/")
+
+    print(f"Done. CSV files in {output_dir}/")
     return 0
 
 
