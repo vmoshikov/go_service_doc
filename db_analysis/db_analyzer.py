@@ -64,11 +64,12 @@ GROUP BY operator ORDER BY failed_cnt DESC;""",
   ROUND(AVG(EXTRACT(EPOCH FROM duration)), 2) AS avg_duration_sec
 FROM operation_v2.tasks WHERE state_dt > now() - interval '{pd_str} days' AND duration IS NOT NULL
 GROUP BY action ORDER BY avg_duration_sec DESC NULLS LAST;""",
-        "nodepool_cluster": f"""SELECT c.uid AS cluster_uid, c.short_name, COUNT(np.uid) AS nodepool_count
-FROM conf.cluster c LEFT JOIN conf.nodepool np ON np.cluster_uid = c.uid
-  AND (np.deleted IS NULL OR np.deleted = false)
+        "nodepool_cluster": f"""SELECT c.uid AS cluster_uid, MAX(cc.cluster_ci) AS cluster_ci, c.short_name, MAX(cc.environment) AS env, c.di_area_id, COUNT(np.uid) AS nodepool_count
+FROM conf.cluster c
+LEFT JOIN conf.nodepool np ON np.cluster_uid = c.uid AND (np.deleted IS NULL OR np.deleted = false)
+LEFT JOIN state.cluster_consumption cc ON cc.uid = c.uid AND cc.update_ts > now() - interval '{pd_str} days'
 WHERE c.delete_ts IS NULL AND c.modify_ts > now() - interval '{pd_str} days'
-GROUP BY c.uid, c.short_name ORDER BY nodepool_count DESC;""",
+GROUP BY c.uid, c.short_name, c.di_area_id ORDER BY nodepool_count DESC;""",
         "nodepool_node_type": f"""SELECT COALESCE(np.node_type_code::text, 'null') AS node_type_code, COUNT(*) AS cnt
 FROM conf.nodepool np JOIN conf.cluster c ON c.uid = np.cluster_uid AND c.delete_ts IS NULL
 WHERE (np.deleted IS NULL OR np.deleted = false) AND np.modify_ts > now() - interval '{pd_str} days'
@@ -656,11 +657,18 @@ def build_unified_report(
             cl_cols = [c for c in ["uid", "short_name", "di_area_id"] if c in cl.columns]
             by_cl = by_cl.merge(cl[cl_cols], left_on="cluster_uid", right_on="uid", how="left")
         cc = tables.get("state.cluster_consumption", pd.DataFrame())
-        if not cc.empty and "uid" in cc.columns and "environment" in cc.columns:
-            env_df = cc.drop_duplicates("uid")[["uid", "environment"]].rename(columns={"uid": "cluster_uid", "environment": "env"})
-            by_cl = by_cl.merge(env_df, on="cluster_uid", how="left")
+        if not cc.empty and "uid" in cc.columns:
+            cc_cols = ["uid"]
+            rename_map = {"uid": "cluster_uid"}
+            if "environment" in cc.columns:
+                cc_cols.append("environment")
+                rename_map["environment"] = "env"
+            if "cluster_ci" in cc.columns:
+                cc_cols.append("cluster_ci")
+            cc_map = cc.drop_duplicates("uid")[cc_cols].rename(columns=rename_map)
+            by_cl = by_cl.merge(cc_map, on="cluster_uid", how="left")
         by_cl = by_cl.drop(columns=["uid"], errors="ignore")
-        out += "<h3>CR на кластер (cluster_uid, short_name, env, di_area_id, cr_list)</h3>" + by_cl.to_html(index=False)
+        out += "<h3>CR на кластер (cluster_uid, cluster_ci, short_name, env, di_area_id, cr_list)</h3>" + by_cl.to_html(index=False)
         if sql.get("cr_usage"):
             out += sql_collapse(sql["cr_usage"])
     out += "</div>"
@@ -766,10 +774,17 @@ def build_unified_report(
                 cl_cols = [c for c in ["uid", "short_name", "di_area_id"] if c in cl.columns]
                 by_cl = by_cl.merge(cl[cl_cols], left_on="cluster_uid", right_on="uid", how="left")
             cc = tables.get("state.cluster_consumption", pd.DataFrame())
-            if not cc.empty and "uid" in cc.columns and "environment" in cc.columns:
-                env_df = cc.drop_duplicates("uid")[["uid", "environment"]].rename(columns={"uid": "cluster_uid", "environment": "env"})
-                by_cl = by_cl.merge(env_df, on="cluster_uid", how="left")
-            out += "<h3>Nodepool по кластерам</h3>" + by_cl.head(20).to_html(index=False)
+            if not cc.empty and "uid" in cc.columns:
+                cc_cols = ["uid"]
+                rename_map = {"uid": "cluster_uid"}
+                if "environment" in cc.columns:
+                    cc_cols.append("environment")
+                    rename_map["environment"] = "env"
+                if "cluster_ci" in cc.columns:
+                    cc_cols.append("cluster_ci")
+                cc_map = cc.drop_duplicates("uid")[cc_cols].rename(columns=rename_map)
+                by_cl = by_cl.merge(cc_map, on="cluster_uid", how="left")
+            out += "<h3>Nodepool по кластерам (cluster_ci, short_name, env, di_area_id)</h3>" + by_cl.head(20).to_html(index=False)
             if sql.get("nodepool_cluster"):
                 out += sql_collapse(sql["nodepool_cluster"])
         if "node_type_code" in np_df.columns:
