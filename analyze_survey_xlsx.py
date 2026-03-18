@@ -7,9 +7,11 @@
 - Следующая строка пустая — матрица (инструменты по строкам, варианты по колонкам)
 - Следующая строка: вопрос + "Вариант ответа" — страница с множеством вопросов (подпункты)
 
-Фильтрация: при анализе страниц детализации инструмента (например "GigaChat .. функции")
-исключаются респонденты, ответившие "не знаю/не использую" на этот инструмент в вопросе
-о выборе инструментов (по умолчанию вопрос 9).
+Фильтрация:
+- Матрица: для каждого инструмента исключаются респонденты, ответившие "не использую"
+  или "3" (нет опыта) — считаются только те, кто имеет опыт использования.
+- Страницы детализации: исключаются респонденты, ответившие "не знаю/не использую"
+  на инструмент в вопросе о выборе (по умолчанию вопрос 9).
 """
 
 import argparse
@@ -37,7 +39,7 @@ DETAIL_PAGE_PATTERN = re.compile(r"^([^.]+?)\s*\.\.\s*.+$")
 # Ключевые фразы
 VARIANT_OTVETA = "Вариант ответа"
 
-# Фразы в ответе = респондент исключается из страниц детализации этого инструмента
+# Фразы в ответе = респондент исключается (нет опыта с инструментом)
 EXCLUDE_PHRASES = (
     "не знаю",
     "не использую",
@@ -45,6 +47,8 @@ EXCLUDE_PHRASES = (
     "не знаком",
     "не использую/не знаком",
 )
+# Точные значения = нет опыта (оценка 3 при отсутствии опыта, см. --no-exclude-3)
+NO_EXPERIENCE_VALUES = ("3",)
 
 
 def _get_cell_str(value) -> str:
@@ -91,10 +95,19 @@ def extract_tool_from_page_name(page_name: str) -> Optional[str]:
     return None
 
 
-def _answer_should_exclude(answer: str) -> bool:
-    """Проверяет, исключает ли ответ респондента из страниц детализации инструмента."""
+def _answer_should_exclude(answer: str, exclude_rating_3: bool = True) -> bool:
+    """Проверяет, исключает ли ответ респондента (нет опыта с инструментом)."""
     a = answer.lower().strip()
-    return any(phrase in a for phrase in EXCLUDE_PHRASES)
+    if any(phrase in a for phrase in EXCLUDE_PHRASES):
+        return True
+    if exclude_rating_3 and a in NO_EXPERIENCE_VALUES:
+        return True
+    return False
+
+
+def _respondent_has_experience(answer: str) -> bool:
+    """Респондент имеет опыт (ответ не 'не использую' и не '3')."""
+    return not _answer_should_exclude(answer)
 
 
 def get_main_questions(pages: List[dict]) -> List[Tuple[int, str]]:
@@ -193,11 +206,33 @@ def _get_page_block_bounds(
     return start, end
 
 
+def detect_layout(rows: List[tuple]) -> str:
+    """
+    Определяет раскладку: 'columns' = респонденты в столбцах (col 1..N),
+    'rows' = респонденты в строках (row 1..N).
+    Эвристика: если в первой строке есть паттерн N. в нескольких ячейках — заголовки по колонкам.
+    Если в первом столбце много N. — структура по строкам.
+    """
+    if not rows:
+        return "columns"
+    first_row = rows[0]
+    first_col_headers = sum(
+        1 for c in first_row if c and PAGE_HEADER_PATTERN.match(_get_cell_str(c))
+    )
+    first_col_values = sum(
+        1 for r in rows[:50] if r and PAGE_HEADER_PATTERN.match(_get_cell_str(r[0]))
+    )
+    if first_col_values > first_col_headers:
+        return "columns"  # N. в первом столбце — классическая структура
+    return "rows"  # N. в первой строке — респонденты в строках
+
+
 def extract_question_stats(
     rows: List[tuple],
     pages: List[dict],
     page_idx: int,
     valid_columns: Optional[Set[int]] = None,
+    exclude_rating_3: bool = True,
 ) -> Dict[str, Any]:
     """
     Извлекает числовую статистику по ответам для одной страницы.
@@ -218,6 +253,7 @@ def extract_question_stats(
         "total_respondents": len(valid_columns),
         "answers": defaultdict(int),
         "matrix": {},
+        "matrix_n": {},  # по инструменту: кол-во респондентов с опытом (исключая "не использую")
         "subquestions": [],
     }
 
@@ -233,22 +269,28 @@ def extract_question_stats(
     data_start += 1
 
     if page_type == "single_question":
-        # Один вопрос: варианты в строках или один ряд. Сканируем все ячейки блока.
-        for r in range(data_start, end_row):
-            if r >= len(rows):
-                break
-            row = rows[r]
-            if _has_variant_otveta(row) or _is_empty_row(row):
-                continue
-            for col in valid_columns:
+        # Один вопрос: каждый респондент (колонка) даёт один ответ.
+        # Сумма по колонкам: для каждой колонки берём первый непустой ответ в блоке.
+        for col in valid_columns:
+            val = None
+            for r in range(data_start, end_row):
+                if r >= len(rows):
+                    break
+                row = rows[r]
+                if _has_variant_otveta(row) or _is_empty_row(row):
+                    continue
                 if col < len(row):
-                    val = _get_cell_str(row[col])
-                    if val and val != VARIANT_OTVETA and not _is_page_header(val)[0]:
-                        result["answers"][val] += 1
+                    v = _get_cell_str(row[col])
+                    if v and v != VARIANT_OTVETA and not _is_page_header(v)[0]:
+                        val = v
+                        break
+            if val:
+                result["answers"][val] += 1
 
     elif page_type == "matrix":
-        # Строки = инструменты/элементы, столбцы = респонденты, ячейка = ответ
-        # Пропускаем строку заголовков (пустая или "Вариант ответа")
+        # Строки = инструменты, столбцы = респонденты, ячейка = ответ.
+        # Исключаем респондентов, ответивших "не использую" / "3" для данного инструмента —
+        # считаем только тех, кто имеет опыт использования.
         if data_start < len(rows) and (
             _is_empty_row(rows[data_start]) or _has_variant_otveta(rows[data_start])
         ):
@@ -261,11 +303,16 @@ def extract_question_stats(
             if not row_label or _is_page_header(row_label)[0]:
                 continue
             result["matrix"][row_label] = defaultdict(int)
+            respondents_with_experience = 0
             for col in valid_columns:
                 if col < len(row):
                     val = _get_cell_str(row[col])
                     if val:
+                        if _answer_should_exclude(val, exclude_rating_3):
+                            continue  # Исключаем: нет опыта с этим инструментом
                         result["matrix"][row_label][val] += 1
+                        respondents_with_experience += 1
+            result["matrix_n"][row_label] = respondents_with_experience
 
     elif page_type == "multiple_questions":
         # Строки = подвопросы (вопрос в col 0), столбцы = респонденты
@@ -293,16 +340,97 @@ def extract_question_stats(
     return result
 
 
+def _get_page_column_bounds(rows: List[tuple]) -> List[Tuple[int, int, dict]]:
+    """
+    Для layout=rows: сканирует строку 0, находит заголовки N. и возвращает
+    [(start_col, end_col, page_info), ...].
+    """
+    if not rows:
+        return []
+    header = rows[0]
+    result = []
+    i = 0
+    while i < len(header):
+        cell = _get_cell_str(header[i])
+        is_h, name, num = _is_page_header(cell)
+        if is_h and name:
+            start = i
+            end = i + 1
+            j = i + 1
+            while j < len(header):
+                next_cell = _get_cell_str(header[j])
+                if _is_page_header(next_cell)[0]:
+                    end = j
+                    break
+                j += 1
+            else:
+                end = len(header)
+            result.append((start, end, {"num": num, "name": name, "row": 1}))
+            i = end
+        else:
+            i += 1
+    return result
+
+
+def extract_question_stats_rows_layout(
+    rows: List[tuple],
+    col_start: int,
+    col_end: int,
+    page_info: dict,
+    valid_rows: Optional[Set[int]] = None,
+) -> Dict[str, Any]:
+    """
+    Извлечение статистики когда респонденты в строках (rows 1..N).
+    col_start, col_end — диапазон колонок для этого вопроса.
+    """
+    total_rows = len(rows) - 1 if rows else 0  # минус заголовок
+    if valid_rows is None:
+        valid_rows = set(range(1, len(rows)))
+    result = {
+        "page_num": page_info.get("num", 0),
+        "page_name": page_info.get("name", ""),
+        "type": "single_question",
+        "tool": extract_tool_from_page_name(page_info.get("name", "")),
+        "total_respondents": len(valid_rows),
+        "answers": defaultdict(int),
+        "matrix": {},
+        "subquestions": [],
+    }
+    for r in valid_rows:
+        if r >= len(rows):
+            continue
+        row = rows[r]
+        for c in range(col_start, min(col_end, len(row))):
+            val = _get_cell_str(row[c])
+            if val:
+                result["answers"][val] += 1
+    result["answers"] = dict(result["answers"])
+    return result
+
+
 def extract_all_stats(
     rows: List[tuple],
     pages: List[dict],
     exclusion_map: Optional[Dict[str, Set[int]]] = None,
     tool_question_num: int = 9,
+    layout: str = "columns",
+    exclude_rating_3: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Извлекает статистику по всем страницам.
     Применяет фильтрацию по инструментам для страниц детализации.
+    layout: 'columns' = респонденты в столбцах, 'rows' = респонденты в строках.
     """
+    if layout == "rows":
+        col_bounds = _get_page_column_bounds(rows)
+        all_stats = []
+        for start, end, page_info in col_bounds:
+            stats = extract_question_stats_rows_layout(
+                rows, start, end, page_info, None
+            )
+            all_stats.append(stats)
+        return all_stats
+
     total_cols = len(rows[0]) if rows else 0
     all_stats = []
 
@@ -312,13 +440,18 @@ def extract_all_stats(
             valid = get_valid_respondent_columns(
                 p["tool"], exclusion_map, total_cols
             )
-        stats = extract_question_stats(rows, pages, i, valid)
+        stats = extract_question_stats(
+            rows, pages, i, valid, exclude_rating_3=exclude_rating_3
+        )
         all_stats.append(stats)
 
     return all_stats
 
 
-def build_text_report(stats_list: List[Dict[str, Any]]) -> str:
+def build_text_report(
+    stats_list: List[Dict[str, Any]],
+    validate: bool = False,
+) -> str:
     """Формирует текстовый отчёт."""
     lines = []
     lines.append("=" * 80)
@@ -338,24 +471,39 @@ def build_text_report(stats_list: List[Dict[str, Any]]) -> str:
         lines.append("-" * 60)
 
         if s["type"] == "single_question" and s["answers"]:
+            total_ans = sum(s["answers"].values())
+            if validate or (total_ans != s["total_respondents"] and total_ans > 0):
+                lines.append(
+                    f"   [Сумма ответов по колонкам: {total_ans}, респондентов: {s['total_respondents']}]"
+                )
             for ans, cnt in sorted(s["answers"].items(), key=lambda x: -x[1]):
                 pct = 100 * cnt / s["total_respondents"] if s["total_respondents"] else 0
                 lines.append(f"   {ans}: {cnt} ({pct:.1f}%)")
 
         elif s["type"] == "matrix" and s["matrix"]:
+            matrix_n = s.get("matrix_n", {})
             for row_label, answers in s["matrix"].items():
-                lines.append(f"   {row_label}:")
+                n_with_experience = matrix_n.get(row_label, sum(answers.values()))
+                excluded = s["total_respondents"] - n_with_experience
+                lines.append(
+                    f"   {row_label}: {n_with_experience} с опытом"
+                    + (f" (исключено {excluded} без опыта)" if excluded else "")
+                    + ":"
+                )
+                row_total = sum(answers.values())
                 for ans, cnt in sorted(answers.items(), key=lambda x: -x[1]):
-                    total = sum(answers.values())
-                    pct = 100 * cnt / total if total else 0
+                    pct = 100 * cnt / row_total if row_total else 0
                     lines.append(f"      {ans}: {cnt} ({pct:.1f}%)")
 
         elif s["type"] == "multiple_questions" and s["subquestions"]:
             for sq in s["subquestions"]:
-                lines.append(f"   {sq['question']}:")
+                sq_total = sum(sq["answers"].values())
+                if validate:
+                    lines.append(f"   {sq['question']} [сумма: {sq_total}]:")
+                else:
+                    lines.append(f"   {sq['question']}:")
                 for ans, cnt in sorted(sq["answers"].items(), key=lambda x: -x[1]):
-                    total = sum(sq["answers"].values())
-                    pct = 100 * cnt / total if total else 0
+                    pct = 100 * cnt / sq_total if sq_total else 0
                     lines.append(f"      {ans}: {cnt} ({pct:.1f}%)")
 
     return "\n".join(lines)
@@ -366,7 +514,10 @@ def build_csv_report(stats_list: List[Dict[str, Any]]) -> str:
     import io
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";", quoting=csv.QUOTE_MINIMAL)
-    w.writerow(["Номер", "Страница", "Тип", "Инструмент", "Вопрос/Строка", "Вариант ответа", "Кол-во", "%"])
+    w.writerow([
+        "Номер", "Страница", "Тип", "Инструмент", "Вопрос/Строка",
+        "С опытом (N)", "Вариант ответа", "Кол-во", "%"
+    ])
 
     for s in stats_list:
         n = s["page_num"]
@@ -378,14 +529,16 @@ def build_csv_report(stats_list: List[Dict[str, Any]]) -> str:
         if t == "single_question":
             for ans, cnt in s["answers"].items():
                 pct = 100 * cnt / total if total else 0
-                w.writerow([n, name, t, tool, "", ans, cnt, f"{pct:.1f}"])
+                w.writerow([n, name, t, tool, "", "", ans, cnt, f"{pct:.1f}"])
 
         elif t == "matrix":
+            matrix_n = s.get("matrix_n", {})
             for row_label, answers in s["matrix"].items():
+                n_exp = matrix_n.get(row_label, sum(answers.values()))
                 row_total = sum(answers.values())
                 for ans, cnt in answers.items():
                     pct = 100 * cnt / row_total if row_total else 0
-                    w.writerow([n, name, t, tool, row_label, ans, cnt, f"{pct:.1f}"])
+                    w.writerow([n, name, t, tool, row_label, n_exp, ans, cnt, f"{pct:.1f}"])
 
         elif t == "multiple_questions":
             for sq in s["subquestions"]:
@@ -393,7 +546,7 @@ def build_csv_report(stats_list: List[Dict[str, Any]]) -> str:
                 row_total = sum(sq["answers"].values())
                 for ans, cnt in sq["answers"].items():
                     pct = 100 * cnt / row_total if row_total else 0
-                    w.writerow([n, name, t, tool, q, ans, cnt, f"{pct:.1f}"])
+                    w.writerow([n, name, t, tool, q, "", ans, cnt, f"{pct:.1f}"])
 
     return buf.getvalue()
 
@@ -430,6 +583,7 @@ def build_json_report(stats_list: List[Dict[str, Any]]) -> str:
             "total_respondents": s["total_respondents"],
             "answers": s["answers"],
             "matrix": s["matrix"],
+            "matrix_n": s.get("matrix_n", {}),
             "subquestions": s["subquestions"],
         })
     return json.dumps(out, ensure_ascii=False, indent=2)
@@ -554,6 +708,23 @@ def main():
         metavar="N,M-K",
         help="Только указанные страницы (например: 1,3,5-10)",
     )
+    parser.add_argument(
+        "--layout",
+        choices=["columns", "rows", "auto"],
+        default="auto",
+        help="Респонденты в столбцах (columns) или в строках (rows). "
+        "columns: колонки 1..N = респонденты. rows: строки 1..N = респонденты.",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Проверка: выводить сумму ответов vs респондентов для каждого вопроса",
+    )
+    parser.add_argument(
+        "--no-exclude-3",
+        action="store_true",
+        help="Не исключать оценку 3 (по умолчанию 3 = нет опыта, исключается)",
+    )
     args = parser.parse_args()
 
     filepath = Path(args.file) if args.file else Path("result_summary.xlsx")
@@ -571,12 +742,22 @@ def main():
     )
 
     if args.report:
-        stats_list = extract_all_stats(rows, pages, exclusion_map, args.tool_question)
+        layout = args.layout
+        if layout == "auto":
+            layout = detect_layout(rows)
+        stats_list = extract_all_stats(
+            rows,
+            pages,
+            exclusion_map,
+            args.tool_question,
+            layout,
+            exclude_rating_3=not args.no_exclude_3,
+        )
         if args.pages:
             page_nums = _parse_pages_filter(args.pages)
             stats_list = [s for s in stats_list if s["page_num"] in page_nums]
         if args.format == "text":
-            report_text = build_text_report(stats_list)
+            report_text = build_text_report(stats_list, validate=args.validate)
         elif args.format == "csv":
             report_text = build_csv_report(stats_list)
         else:
