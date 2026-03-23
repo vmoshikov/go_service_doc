@@ -7,11 +7,12 @@
 - Следующая строка пустая — матрица (инструменты по строкам, варианты по колонкам)
 - Следующая строка: вопрос + "Вариант ответа" — страница с множеством вопросов (подпункты)
 
-Фильтрация:
-- Матрица: для каждого инструмента исключаются респонденты, ответившие "не использую"
-  или "3" (нет опыта) — считаются только те, кто имеет опыт использования.
-- Страницы детализации: исключаются респонденты, ответившие "не знаю/не использую"
-  на инструмент в вопросе о выборе (по умолчанию вопрос 9).
+Фильтрация (опционально, без --no-filter):
+- Страницы по инструменту (напр. "13. GigaChat … Работа с контекстом"): из выборки
+  исключаются респонденты, которые в матрице выбора инструментов ответили по этому
+  инструменту "не знаком" или "знаю, но не использую" (вопрос задаётся через --tool-question).
+- Матрица «опыт»: по-прежнему можно исключать "не использую"/"3" при подсчёте с опытом
+  (см. _answer_should_exclude).
 """
 
 import argparse
@@ -33,22 +34,37 @@ except ImportError:
 # Паттерн: число. название (например "1. Ваша роль в команде")
 PAGE_HEADER_PATTERN = re.compile(r"^\s*(\d+)\.\s+(.+)$")
 
-# Паттерн страницы детализации: "Инструмент .. описание" (например "GigaChat .. функции разработки")
-DETAIL_PAGE_PATTERN = re.compile(r"^([^.]+?)\s*\.\.\s*.+$")
+# Страница «по инструменту»: "GigaChat .. …" или "13. GigaChat Работа с контекстом …"
+DETAIL_PAGE_DOTDOT_PATTERN = re.compile(r"^([^.]+?)\s*\.\.\s*.+$")
+DETAIL_PAGE_NUM_TOOL_PATTERN = re.compile(r"^\s*\d+\.\s*([^\s]+)")
 
 # Ключевые фразы
 VARIANT_OTVETA = "Вариант ответа"
 
-# Фразы в ответе = респондент исключается (нет опыта с инструментом)
+# Для подсчёта «с опытом» в матрице (не для фильтра страниц по инструменту)
 EXCLUDE_PHRASES = (
     "не знаю",
     "не использую",
     "не используется",
-    "не знаком",
-    "не использую/не знаком",
 )
-# Точные значения = нет опыта (оценка 3 при отсутствии опыта, см. --no-exclude-3)
 NO_EXPERIENCE_VALUES = ("3",)
+
+# Первое слово после «N.» не считаем инструментом (обычные вопросы)
+_TOOL_PAGE_FIRST_WORD_STOP = frozenset({
+    "ваша", "ваш", "ваше", "какой", "какая", "какие", "какое", "оцените",
+    "укажите", "выберите", "опишите", "насколько", "в", "как", "что", "есть",
+    "при", "если", "для", "от", "до", "по", "на", "вопрос", "пройдите",
+    "роль", "опыт", "уровень", "частота", "использование", "знакомство",
+})
+
+# Ответы в матрице инструментов → исключить респондента со страниц вопросов по этому инструменту
+TOOL_DETAIL_EXCLUDE_PHRASES = (
+    "не знаком",
+    "знаю, но не использую",
+    "знаю но не использую",
+    "знаю, но не используется",
+    "знаю но не используется",
+)
 
 
 def _get_cell_str(value) -> str:
@@ -84,14 +100,26 @@ def _is_page_header(cell: str) -> Tuple[bool, Optional[str], Optional[int]]:
     return False, None, None
 
 
+def normalize_tool_key(name: str) -> str:
+    """Ключ для сопоставления инструмента в матрице и в заголовке страницы."""
+    return name.strip().lower()
+
+
 def extract_tool_from_page_name(page_name: str) -> Optional[str]:
     """
-    Извлекает имя инструмента из названия страницы детализации.
-    "GigaChat .. функции разработки" -> "GigaChat"
+    Имя инструмента для страниц вопросов по инструменту:
+    "GigaChat .. …" или "13. GigaChat Работа с контекстом …"
     """
-    m = DETAIL_PAGE_PATTERN.match(page_name.strip())
+    s = page_name.strip()
+    m = DETAIL_PAGE_DOTDOT_PATTERN.match(s)
     if m:
         return m.group(1).strip()
+    m2 = DETAIL_PAGE_NUM_TOOL_PATTERN.match(s)
+    if m2:
+        w = m2.group(1).strip()
+        if w.lower() in _TOOL_PAGE_FIRST_WORD_STOP:
+            return None
+        return w
     return None
 
 
@@ -105,9 +133,10 @@ def _answer_should_exclude(answer: str, exclude_rating_3: bool = True) -> bool:
     return False
 
 
-def _respondent_has_experience(answer: str) -> bool:
-    """Респондент имеет опыт (ответ не 'не использую' и не '3')."""
-    return not _answer_should_exclude(answer)
+def _answer_excludes_from_tool_detail(answer: str) -> bool:
+    """Ответ в матрице инструментов → не показывать этого респондента на страницах по инструменту."""
+    a = answer.lower().strip()
+    return any(phrase in a for phrase in TOOL_DETAIL_EXCLUDE_PHRASES)
 
 
 def get_main_questions(pages: List[dict]) -> List[Tuple[int, str]]:
@@ -128,12 +157,12 @@ def build_respondent_exclusion(
     rows: List[tuple],
     pages: List[dict],
     tool_question_num: int = 9,
+    total_cols: int = 0,
 ) -> Dict[str, Set[int]]:
     """
-    Строит маппинг: инструмент -> множество индексов столбцов респондентов для исключения.
-    Респонденты, ответившие "не знаю/не использую" на инструмент в вопросе tool_question_num,
-    исключаются из статистики детализации этого инструмента.
-    Предполагается: столбец 0 = метки, столбцы 1..N = респонденты.
+    По матрице выбора инструментов: для каждого инструмента — столбцы респондентов,
+    ответивших «не знаком» / «знаю, но не использую» (исключать со страниц по инструменту).
+    Ключи инструментов — normalize_tool_key (нижний регистр).
     """
     exclusion: Dict[str, Set[int]] = {}
     # Ищем строки вопроса tool_question_num: страницы с этим номером и следующие
@@ -146,6 +175,9 @@ def build_respondent_exclusion(
 
     if not tool_page_rows:
         return exclusion
+
+    tc = total_cols or (len(rows[0]) if rows else 0)
+    scan_cols = set(range(1, max(tc, 1)))
 
     start_row = tool_page_rows[0]
     # Следующие строки до следующей страницы — строки инструментов
@@ -169,10 +201,13 @@ def build_respondent_exclusion(
         tool_name = _get_cell_str(row[0]) if row else ""
         if not tool_name or _is_page_header(tool_name)[0]:
             continue
-        for col_idx in range(1, len(row)):
-            val = _get_cell_str(row[col_idx]) if col_idx < len(row) else ""
-            if val and _answer_should_exclude(val):
-                exclusion.setdefault(tool_name, set()).add(col_idx)
+        for col_idx in scan_cols:
+            if col_idx >= len(row):
+                continue
+            val = _get_cell_str(row[col_idx])
+            if val and _answer_excludes_from_tool_detail(val):
+                nk = normalize_tool_key(tool_name)
+                exclusion.setdefault(nk, set()).add(col_idx)
 
     return exclusion
 
@@ -180,16 +215,18 @@ def build_respondent_exclusion(
 def get_valid_respondent_columns(
     exclude_for_tool: Optional[str],
     exclusion_map: Dict[str, Set[int]],
-    total_columns: int,
+    base_columns: Set[int],
 ) -> Set[int]:
     """
     Возвращает индексы столбцов респондентов, которые учитываются.
-    Если exclude_for_tool задан — исключаем респондентов, ответивших
-    "не знаю/не использую" на этот инструмент.
+    base_columns — допустимые столбцы для данной страницы (напр. B–F для вопроса 9).
     """
-    valid = set(range(1, total_columns))
-    if exclude_for_tool and exclude_for_tool in exclusion_map:
-        valid -= exclusion_map[exclude_for_tool]
+    valid = set(base_columns)
+    if not exclude_for_tool:
+        return valid
+    k = normalize_tool_key(exclude_for_tool)
+    if k in exclusion_map:
+        valid -= exclusion_map[k]
     return valid
 
 
@@ -239,12 +276,13 @@ def extract_question_stats(
     valid_columns: индексы столбцов респондентов для учёта (None = все).
     """
     total_cols = len(rows[0]) if rows else 0
-    if valid_columns is None:
-        valid_columns = set(range(1, total_cols))
-
     p = pages[page_idx]
     start_row, end_row = _get_page_block_bounds(rows, pages, page_idx)
     page_type = p["type"]
+
+    if valid_columns is None:
+        valid_columns = set(range(1, total_cols))
+
     result = {
         "page_num": p["num"],
         "page_name": p["name"],
@@ -435,10 +473,11 @@ def extract_all_stats(
     all_stats = []
 
     for i, p in enumerate(pages):
+        base_cols = set(range(1, total_cols))
         valid = None
         if exclusion_map and p.get("tool") and total_cols > 1:
             valid = get_valid_respondent_columns(
-                p["tool"], exclusion_map, total_cols
+                p["tool"], exclusion_map, base_cols
             )
         stats = extract_question_stats(
             rows, pages, i, valid, exclude_rating_3=exclude_rating_3
@@ -685,6 +724,12 @@ def main():
         help="Не применять фильтрацию (показать всех респондентов)",
     )
     parser.add_argument(
+        "--no-filter-tool-detail",
+        action="store_true",
+        help="Не исключать по ответам в матрице инструментов "
+        "(«не знаком» / «знаю, но не использую») на страницах по инструменту",
+    )
+    parser.add_argument(
         "--report",
         "-r",
         action="store_true",
@@ -737,9 +782,11 @@ def main():
     pages = analyze_survey_xlsx(filepath)
     rows = load_survey_rows(filepath)
     total_cols = len(rows[0]) if rows else 0
-    exclusion_map = (
-        {} if args.no_filter else build_respondent_exclusion(rows, pages, args.tool_question)
-    )
+    exclusion_map = {}
+    if not args.no_filter and not args.no_filter_tool_detail:
+        exclusion_map = build_respondent_exclusion(
+            rows, pages, args.tool_question, total_cols
+        )
 
     if args.report:
         layout = args.layout
@@ -784,26 +831,28 @@ def main():
     for p in pages:
         line = f"{p['row']:<6} {p['type']:<20} {p['name']}"
         filter_info = ""
-        if not args.no_filter and p.get("tool") and total_cols > 1:
-            valid = get_valid_respondent_columns(p["tool"], exclusion_map, total_cols)
-            excluded = (total_cols - 1) - len(valid)
+        if not args.no_filter and not args.no_filter_tool_detail and p.get("tool") and total_cols > 1:
+            _base = set(range(1, total_cols))
+            valid = get_valid_respondent_columns(p["tool"], exclusion_map, _base)
+            excluded = len(_base) - len(valid)
             if excluded > 0:
-                filter_info = f" (респондентов с фильтром: {len(valid)}/{total_cols - 1}, исключено: {excluded})"
+                filter_info = f" (респондентов с фильтром: {len(valid)}/{len(_base)}, исключено: {excluded})"
         elif args.filter_tool and total_cols > 1:
+            _base = set(range(1, total_cols))
             valid = get_valid_respondent_columns(
-                args.filter_tool, exclusion_map, total_cols
+                args.filter_tool, exclusion_map, _base
             )
-            excluded = (total_cols - 1) - len(valid)
+            excluded = len(_base) - len(valid)
             if p.get("tool") == args.filter_tool and excluded > 0:
                 filter_info = f" (учтено: {len(valid)}, исключено: {excluded})"
         print(line + filter_info)
         if p["description"]:
             print(f"       └─ {p['description']}")
 
-    if exclusion_map and not args.no_filter:
-        print("\n--- Фильтрация по инструментам ---")
-        print("Респонденты с ответом 'не знаю/не использую/не знаком' исключаются")
-        print("из страниц детализации соответствующего инструмента.")
+    if exclusion_map and not args.no_filter and not args.no_filter_tool_detail:
+        print("\n--- Фильтрация страниц по инструменту ---")
+        print("Исключаются респонденты с ответами «не знаком» / «знаю, но не использую»")
+        print("в матрице инструментов (--tool-question).")
         for tool, cols in sorted(exclusion_map.items()):
             print(f"  {tool}: исключено {len(cols)} респондентов")
 
