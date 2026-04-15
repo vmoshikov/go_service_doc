@@ -9,6 +9,7 @@ the codebase and combining user-provided sections with auto-generated content.
 import argparse
 import json
 import os
+import shutil
 import sys
 import tempfile
 import subprocess
@@ -22,8 +23,53 @@ from parsers.library_parser import LibraryParser
 from parsers.import_parser import ImportParser
 from parsers.struct_parser import StructParser
 from generators.doc_generator import DocumentationGenerator
-from rules import load_rules_for_repo, normalize_rules, is_enabled
+from rules import (
+    load_rules_for_repo,
+    normalize_rules,
+    is_enabled,
+    is_function_test_registry_enabled,
+    is_er_diagram_enabled,
+)
 from changelog_generator import ChangelogGenerator
+
+
+def _update_docs_index(docs_root: Path) -> None:
+    """Обновить docs/_index.md со списком всех проектов для Hugo."""
+    if not docs_root.exists():
+        return
+    projects: List[str] = []
+    for item in sorted(docs_root.iterdir()):
+        if not item.is_dir() or item.name.startswith('.'):
+            continue
+        # Проект: есть README, sections или CHANGELOG
+        if (
+            (item / "README.md").exists()
+            or (item / "sections").is_dir()
+            or (item / "CHANGELOG.md").exists()
+        ):
+            projects.append(item.name)
+    if not projects:
+        return
+    index_path = docs_root / "_index.md"
+    lines = [
+        "---",
+        'title: "Документация Go сервисов"',
+        "---",
+        "",
+        "# Документация Go сервисов",
+        "",
+        "Автогенерируемая документация для Go сервисов. Выберите проект в меню слева.",
+        "",
+        "## Проекты",
+        "",
+    ]
+    for name in projects:
+        # Ссылка на README проекта, если есть; иначе — на раздел
+        href = f"/{name}/readme/" if (docs_root / name / "README.md").exists() else f"/{name}/"
+        lines.append(f"- [{name}]({href}) — документация сервиса {name}")
+    lines.append("")
+    index_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"Updated docs index: {index_path}")
 
 
 def _derive_repo_name(source: str) -> str:
@@ -112,16 +158,71 @@ def _derive_web_url_from_repo_url(repo_url: str) -> Optional[str]:
     return None
 
 
-def _clone_repo_to_temp(repo_url: str, ref: Optional[str], repo_name: str) -> Path:
+def _clone_repo_to_temp(
+    repo_url: str,
+    ref: Optional[str],
+    repo_name: str,
+    *,
+    shallow: bool = False,
+) -> Path:
+    """
+    Clone repository into a temp directory.
+    If ref is set: prefer `git clone --branch <ref> --single-branch`, then fallback to
+    default clone + `git checkout <ref>` (needed for some tags/SHAs).
+    """
     tmp_root = Path(tempfile.mkdtemp(prefix="go_service_doc_"))
     target_dir = tmp_root / repo_name
 
-    clone_cmd = ["git", "clone", "--quiet", repo_url, str(target_dir)]
-    subprocess.run(clone_cmd, check=True)
+    depth_args = ["--depth", "1"] if shallow else []
 
-    if ref:
-        # Try checkout ref (tag/branch/commit)
-        subprocess.run(["git", "-C", str(target_dir), "checkout", "--quiet", ref], check=False)
+    def clone_default() -> None:
+        cmd = ["git", "clone", "--quiet", *depth_args, repo_url, str(target_dir)]
+        subprocess.run(cmd, check=True)
+
+    if not ref:
+        clone_default()
+        return target_dir
+
+    # Try: clone directly on branch/tag (works for many branch names and some tags)
+    cmd_branch = [
+        "git",
+        "clone",
+        "--quiet",
+        *depth_args,
+        "--branch",
+        ref,
+        "--single-branch",
+        repo_url,
+        str(target_dir),
+    ]
+    result = subprocess.run(cmd_branch, capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"Cloned repository at ref: {ref}")
+        return target_dir
+
+    err_hint = (result.stderr or result.stdout or "").strip()
+    if err_hint:
+        print(f"Note: git clone --branch {ref!r} failed ({err_hint[:200]}); trying default clone + checkout.")
+
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+
+    clone_default()
+    co = subprocess.run(
+        ["git", "-C", str(target_dir), "checkout", "--quiet", ref],
+        capture_output=True,
+        text=True,
+    )
+    if co.returncode != 0 and shallow:
+        # Shallow clone may not include the requested commit
+        print(f"Note: checkout {ref!r} failed with shallow clone; retrying full clone + checkout.")
+        shutil.rmtree(target_dir)
+        subprocess.run(["git", "clone", "--quiet", repo_url, str(target_dir)], check=True)
+        subprocess.run(["git", "-C", str(target_dir), "checkout", "--quiet", ref], check=True)
+    elif co.returncode != 0:
+        subprocess.run(["git", "-C", str(target_dir), "checkout", "--quiet", ref], check=True)
+    else:
+        print(f"Checked out ref: {ref}")
 
     return target_dir
 
@@ -170,9 +271,21 @@ def main():
     )
     parser.add_argument(
         '--ref',
+        '--branch',
         type=str,
         default=None,
-        help='Tag/branch/commit to checkout after cloning (default: from CI env)'
+        dest='ref',
+        metavar='REF',
+        help=(
+            'Branch, tag, or commit to use when cloning a remote repository '
+            '(git clone --branch when possible, else checkout). Synonym: --branch. '
+            'Default: CI_COMMIT_TAG / CI_COMMIT_REF_NAME / GIT_REF.'
+        ),
+    )
+    parser.add_argument(
+        '--shallow',
+        action='store_true',
+        help='Use git clone --depth 1 (faster; may fail for arbitrary SHAs — full clone is retried).',
     )
     parser.add_argument(
         '--repo-web-url',
@@ -207,7 +320,7 @@ def main():
         print("Tip: Provide it as positional arg, or set CI_REPOSITORY_URL/PROJECT_REPO_URL.", file=sys.stderr)
         sys.exit(1)
 
-    ref = args.ref or env_ref
+    ref = args.ref if args.ref is not None else env_ref
     repo_name = args.repo_name or _derive_repo_name(source)
 
     # Determine docs root and per-repo docs directory
@@ -225,7 +338,9 @@ def main():
     else:
         print(f"Cloning repository into a temporary directory: {source}")
         try:
-            cloned_repo_dir = _clone_repo_to_temp(source, ref=ref, repo_name=repo_name)
+            cloned_repo_dir = _clone_repo_to_temp(
+                source, ref=ref, repo_name=repo_name, shallow=args.shallow
+            )
         except subprocess.CalledProcessError as e:
             print(f"Error: git clone failed: {e}", file=sys.stderr)
             sys.exit(1)
@@ -314,10 +429,27 @@ def main():
         print(f"Generating CHANGELOG: {changelog_out}")
         ChangelogGenerator(go_dir, output_path=changelog_out, rules=rules).generate(version=tag_ref)
         print(f"CHANGELOG generated successfully: {changelog_out}")
+        _update_docs_index(docs_root)
         return
 
-    function_parser = FunctionParser(go_dir, exclude_dirs=exclude_dirs)
     cache_dir = docs_dir / ".cache"
+
+    if proto_config_path and proto_config_path.exists():
+        try:
+            proto_cfg = json.loads(proto_config_path.read_text(encoding="utf-8"))
+            ext = proto_cfg.get("external_repositories") or {}
+            if ext:
+                from parsers.proto_prefetch import prefetch_external_proto_repos
+
+                prefetch_external_proto_repos(
+                    cache_dir / "proto",
+                    ext,
+                    shallow=args.shallow,
+                )
+        except Exception as e:
+            print(f"Warning: proto prefetch failed: {e}")
+
+    function_parser = FunctionParser(go_dir, exclude_dirs=exclude_dirs)
     api_parser = APIParser(
         go_dir,
         config_path=proto_config_path,
@@ -325,7 +457,8 @@ def main():
         cache_dir=(cache_dir / "proto"),
         exclude_dirs=exclude_dirs,
     ) if is_enabled(rules, "api") else None
-    test_parser = TestParser(go_dir, exclude_dirs=exclude_dirs) if is_enabled(rules, "tests") else None
+    want_test_parse = is_enabled(rules, "tests") or is_function_test_registry_enabled(rules)
+    test_parser = TestParser(go_dir, exclude_dirs=exclude_dirs) if want_test_parse else None
     library_parser = LibraryParser(go_dir) if is_enabled(rules, "libraries") else None
     import_parser = ImportParser(
         go_dir,
@@ -397,6 +530,14 @@ def main():
         print("Parsing imports...")
         imports = import_parser.parse()
     
+    migration_tables = None
+    if is_er_diagram_enabled(rules):
+        from parsers.migration_schema import build_schema_from_migrations
+
+        migration_tables, mig_warn = build_schema_from_migrations(go_dir, rules)
+        for w in mig_warn:
+            print(f"Migration ER: {w}")
+
     # Generate documentation
     print("Generating documentation...")
     # Prefer explicit repo web URL, then CI_PROJECT_URL (if it actually points to source repo),
@@ -424,7 +565,8 @@ def main():
         tests=tests,
         libraries=libraries,
         imports=imports,
-        output_file=args.output
+        output_file=args.output,
+        migration_tables=migration_tables,
     )
     
     print(f"Documentation generated successfully: {docs_dir / args.output}")
@@ -438,6 +580,8 @@ def main():
         print(f"Generating CHANGELOG: {changelog_out}")
         ChangelogGenerator(go_dir, output_path=changelog_out, rules=rules).generate(version=tag_ref)
         print(f"CHANGELOG generated successfully: {changelog_out}")
+
+    _update_docs_index(docs_root)
 
 
 if __name__ == '__main__':

@@ -21,6 +21,25 @@ DEFAULT_RULES: Dict[str, Any] = {
     "exclude_dirs": ["vendor"],
     # Functions doc grouping: 1 = by top-level dir, 2 = by two path levels, 0 or null = by full parent dir of each file
     "functions_group_depth": 2,
+    # Split sections/functions/*.md into multiple files when a directory group exceeds this many functions
+    "functions_max_per_file": 80,
+    # Generated sections/function_test_registry.md — functions/methods vs presence of tests (heuristic)
+    "function_test_registry": {
+        "enabled": True,
+        "only_exported": False,
+    },
+    # ER-диаграмма по SQL-миграциям (PostgreSQL-совместимый DDL)
+    "er_diagram": {
+        "enabled": False,
+        # "puml" | "mermaid"
+        "format": "puml",
+        # Относительные пути от корня анализируемого репозитория; пусто — только auto_discover
+        "migrations_paths": [],
+        # Искать migrations/, db/migrations/ если migrations_paths пуст
+        "migrations_auto_discover": True,
+        # Ссылка на ER в секции db.md (если файл есть)
+        "link_in_db_section": False,
+    },
     "features": {
         # If true, major sections in main README are rendered as menus only (links to detailed files)
         "thin_readme": True,
@@ -63,8 +82,10 @@ DEFAULT_RULES: Dict[str, Any] = {
         "functions",
         "api",
         "tests",
+        "function_test_registry",
         "libraries",
         "others_user",
+        "changelog",
     ],
     "changelog": {
         # Формировать changelog только по веткам (merge-коммиты в теге). 1 ветка = 1 задача = 1 пункт.
@@ -101,7 +122,29 @@ def _extract_first_json_block(md_text: str) -> Optional[str]:
 def _merge_rules(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(base)
     # merge top-level keys except sections/features/conflicts/changelog (handled separately)
-    merged.update({k: v for k, v in override.items() if k not in ("sections", "features", "conflicts", "changelog")})
+    merged.update(
+        {
+            k: v
+            for k, v in override.items()
+            if k
+            not in (
+                "sections",
+                "features",
+                "conflicts",
+                "changelog",
+                "function_test_registry",
+                "er_diagram",
+            )
+        }
+    )
+
+    ftr = dict(base.get("function_test_registry") or {})
+    ftr.update(override.get("function_test_registry") or {})
+    merged["function_test_registry"] = ftr
+
+    erd = dict(base.get("er_diagram") or {})
+    erd.update(override.get("er_diagram") or {})
+    merged["er_diagram"] = erd
 
     changelog = dict(base.get("changelog") or {})
     changelog.update(override.get("changelog") or {})
@@ -207,6 +250,20 @@ def normalize_rules(rules: Dict[str, Any]) -> Dict[str, Any]:
             rules.setdefault("sections", {}).setdefault("imports", {})["enabled"] = True
 
     return rules
+
+
+def is_er_diagram_enabled(rules: Dict[str, Any]) -> bool:
+    """Генерировать ER из миграций (er_diagram.enabled)."""
+    er = rules.get("er_diagram") or {}
+    return bool(er.get("enabled", False))
+
+
+def is_function_test_registry_enabled(rules: Dict[str, Any]) -> bool:
+    """Generate function_test_registry.md when functions are enabled and registry flag is on."""
+    fr = rules.get("function_test_registry") or {}
+    if not bool(fr.get("enabled", True)):
+        return False
+    return is_enabled(rules, "functions")
 
 
 def is_enabled(rules: Dict[str, Any], section_key: str) -> bool:

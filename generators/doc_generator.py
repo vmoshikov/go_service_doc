@@ -6,13 +6,14 @@ to create a comprehensive README.md file.
 """
 
 import json
+import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from generators.ai_description import generate_function_description, generate_endpoint_description
 from generators.plantuml_generator import PlantUMLGenerator
 from parsers.component_analyzer import ComponentAnalyzer
-from rules import is_enabled
+from rules import is_enabled, is_function_test_registry_enabled, is_er_diagram_enabled
 
 
 def _escape_yaml_str(s: str) -> str:
@@ -54,6 +55,24 @@ class DocumentationGenerator:
     def set_structs(self, structs: Dict):
         """Set struct definitions for JSON generation."""
         self.structs = structs
+
+    def _site_slug(self) -> str:
+        n = (self.repo_name or "unknown").strip().strip("/")
+        return n if n else "unknown"
+
+    def _doc_href(self, path: str) -> str:
+        """Absolute site-root path for inter-doc links, e.g. /myrepo/sections/imports.md."""
+        p = path.strip().replace("\\", "/")
+        while p.startswith("../"):
+            p = p[3:]
+        p = p.lstrip("/")
+        base = self._site_slug()
+        if p in ("", "README.md"):
+            return f"/{base}/readme/"
+        low = p.lower()
+        if low.endswith("readme.md") and p.count("/") == 0:
+            return f"/{base}/readme/"
+        return f"/{base}/{p}"
 
     def _ai_frontmatter(self, title: str, doc_type: str, chunk_boundary: str = "h3", **extra: str) -> str:
         """YAML frontmatter for AI-ready chunking (vector DB). No PyYAML dependency."""
@@ -153,7 +172,8 @@ class DocumentationGenerator:
         tests: Dict,
         libraries: Dict,
         imports: Optional[Dict] = None,
-        output_file: str = 'README.md'
+        output_file: str = 'README.md',
+        migration_tables: Optional[Dict] = None,
     ):
         """Generate complete documentation."""
         
@@ -181,6 +201,12 @@ class DocumentationGenerator:
             self._generate_libraries(libraries)
         if is_enabled(self.rules, "imports"):
             self._generate_imports(imports or {})
+
+        if is_function_test_registry_enabled(self.rules):
+            self._generate_function_test_registry(functions, tests)
+
+        if is_er_diagram_enabled(self.rules) and migration_tables:
+            self._generate_er_diagram(migration_tables)
 
         # Ensure standard top-level files exist
         self._ensure_top_level_files()
@@ -221,23 +247,20 @@ class DocumentationGenerator:
             )
 
     def _sections_nav(self, current_depth: int = 1) -> List[str]:
-        """
-        Navigation block for section files.
-        current_depth:
-          - 1 for docs/<repo>/sections/*.md (../README.md)
-          - 2 for docs/<repo>/sections/functions/*.md (../../README.md)
-        """
-        prefix = "../" * current_depth
+        """Navigation block using site-root absolute paths /{repo}/...."""
+        h = self._doc_href
         lines: List[str] = []
         lines.append("## Навигация\n\n")
-        lines.append(f"- [К оглавлению документации]({prefix}README.md)\n")
-        lines.append(f"- [Диаграммы]({prefix}diagrams/)\n")
-        lines.append("- [Импорты](imports.md)\n")
-        lines.append("- [Структуры и типы](structures.md)\n")
-        lines.append("- [Функции](functions.md)\n")
-        lines.append("- [Спецификация API](api.md)\n")
-        lines.append("- [Тестирование](tests.md)\n")
-        lines.append("- [Используемые библиотеки](libraries.md)\n")
+        lines.append(f"- [К оглавлению документации]({h('README.md')})\n")
+        lines.append(f"- [Диаграммы]({h('diagrams/')})\n")
+        lines.append(f"- [Импорты]({h('sections/imports.md')})\n")
+        lines.append(f"- [Структуры и типы]({h('sections/structures.md')})\n")
+        lines.append(f"- [Функции]({h('sections/functions.md')})\n")
+        lines.append(f"- [Спецификация API]({h('sections/api.md')})\n")
+        lines.append(f"- [Тестирование]({h('sections/tests.md')})\n")
+        lines.append(f"- [Используемые библиотеки]({h('sections/libraries.md')})\n")
+        if is_function_test_registry_enabled(self.rules):
+            lines.append(f"- [Реестр функций и тестов]({h('sections/function_test_registry.md')})\n")
         lines.append("\n---\n\n")
         return lines
 
@@ -439,7 +462,7 @@ class DocumentationGenerator:
                 file_path = info.get("file")
                 line = info.get("line")
                 loc = f"{file_path}:{line}" if file_path and line else (file_path or "—")
-                content.append(self._ai_entity_summary("structure", name=name, kind=kind, location=loc))
+                content.append(self._ai_entity_summary("structure", name=name, go_kind=kind, location=loc))
                 content.append(f"### {name} ({kind})\n\n")
                 if file_path:
                     if info.get("from_proto") and info.get("source_repo_url"):
@@ -560,7 +583,20 @@ class DocumentationGenerator:
             return '1s'
         
         return {}
-    
+
+    def _function_group_summary(self, funcs: List[Dict]) -> str:
+        """One-line stats for the functions index."""
+        nfun = len(funcs)
+        files = {f.get("file") or "" for f in funcs}
+        nfiles = len(files)
+        tops = set()
+        for fp in files:
+            tops.add(fp.split("/")[0] if "/" in fp else ".")
+        preview = ", ".join(sorted(tops)[:10])
+        if len(tops) > 10:
+            preview += " …"
+        return f"{nfun} функ., {nfiles} файлов — {preview}"
+
     def _generate_functions(self, functions: List[Dict], api_spec: Dict):
         """Generate functions index + per-directory files (grouped by parent dir of each file)."""
         if not functions:
@@ -601,8 +637,11 @@ class DocumentationGenerator:
         functions_dir = self.sections_dir / "functions"
         functions_dir.mkdir(parents=True, exist_ok=True)
 
+        max_per = int(self.rules.get("functions_max_per_file") or 80)
+        if max_per < 1:
+            max_per = 80
+
         def safe_name(s: str) -> str:
-            import re
             s = s.strip().replace("/", "_").replace("\\", "_")
             s = re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
             return s or "root"
@@ -612,32 +651,45 @@ class DocumentationGenerator:
             ln = line or 0
             return f"{name} ({file_path}:{ln})"
 
-        # Prepare per-directory pages (one page per directory that contains .go files)
+        # Prepare pages: one or more .md per directory group (split when too many functions)
         dir_items: List[Dict[str, object]] = []
         for top in sorted(grouped.keys()):
             title = "root" if top == "." else top
-            file_name = f"{safe_name(title)}.md"
-            rel_path = f"sections/functions/{file_name}"
-            dir_items.append(
-                {
-                    "key": top,
-                    "dir": title,
-                    "file_name": file_name,
-                    "rel_path": rel_path,
-                    "functions": grouped[top],
-                }
-            )
+            funcs_all = grouped[top]
+            sn = safe_name(title)
+            if len(funcs_all) <= max_per:
+                chunks = [funcs_all]
+            else:
+                chunks = [funcs_all[i : i + max_per] for i in range(0, len(funcs_all), max_per)]
+            for part_idx, chunk in enumerate(chunks):
+                if len(chunks) == 1:
+                    file_name = f"{sn}.md"
+                    dir_title = title
+                else:
+                    file_name = f"{sn}.md" if part_idx == 0 else f"{sn}_{part_idx + 1}.md"
+                    dir_title = f"{title} (часть {part_idx + 1}/{len(chunks)})"
+                rel_path = f"sections/functions/{file_name}"
+                dir_items.append(
+                    {
+                        "key": top,
+                        "dir": dir_title,
+                        "file_name": file_name,
+                        "rel_path": rel_path,
+                        "functions": chunk,
+                    }
+                )
 
-        def nav_block(prev_rel: Optional[str], next_rel: Optional[str]) -> List[str]:
+        def nav_block(prev_file: Optional[str], next_file: Optional[str]) -> List[str]:
+            h = self._doc_href
             lines: List[str] = []
             lines.append("## Навигация\n\n")
-            lines.append("- [К оглавлению документации](../../README.md)\n")
-            lines.append("- [К индексу функций](../functions.md)\n")
-            lines.append("- [К разделам](../)\n")
-            if prev_rel:
-                lines.append(f"- [Предыдущая директория]({prev_rel})\n")
-            if next_rel:
-                lines.append(f"- [Следующая директория]({next_rel})\n")
+            lines.append(f"- [К оглавлению документации]({h('README.md')})\n")
+            lines.append(f"- [К индексу функций]({h('sections/functions.md')})\n")
+            lines.append(f"- [К разделам]({h('sections/')})\n")
+            if prev_file:
+                lines.append(f"- [Предыдущий файл]({h('sections/functions/' + prev_file)})\n")
+            if next_file:
+                lines.append(f"- [Следующий файл]({h('sections/functions/' + next_file)})\n")
             lines.append("\n---\n\n")
             return lines
 
@@ -654,7 +706,7 @@ class DocumentationGenerator:
             page = [self._ai_frontmatter(page_title, "functions", chunk_boundary="h3", group=title)]
             page.append(f"# {page_title}\n\n")
             page.extend(nav_block(str(prev_rel) if prev_rel else None, str(next_rel) if next_rel else None))
-            
+
             # Group by file within this directory
             by_file: Dict[str, List[Dict]] = {}
             for f in item["functions"]:  # type: ignore[index]
@@ -775,7 +827,7 @@ class DocumentationGenerator:
             page.extend(nav_block(str(prev_rel) if prev_rel else None, str(next_rel) if next_rel else None))
             out_path.write_text("\n".join(page), encoding="utf-8")
 
-        # 2) Write index file (sections/functions.md)
+        # 2) Write index file (sections/functions.md) with per-file summaries
         index: List[str] = [
             self._ai_frontmatter("Функции", "functions_index", chunk_boundary="h2"),
             "# Функции\n\n",
@@ -784,20 +836,140 @@ class DocumentationGenerator:
         if group_depth > 0:
             index.append(f"## Группировка по глубине (уровней: {group_depth})\n\n")
         else:
-            index.append("## Директории (по месту расположения файлов)\n\n")
-        index.append("- [К оглавлению документации](../README.md)\n\n")
+            index.append("## Группы (по месту расположения файлов)\n\n")
+        if any(len(v) > max_per for v in grouped.values()):
+            index.append(
+                f"*Крупные группы разбиты на несколько файлов (не более {max_per} функций на файл).*\n\n"
+            )
+        index.append(f"- [К оглавлению документации]({self._doc_href('README.md')})\n\n")
+        index.append("## Сводка по сгенерированным файлам\n\n")
         for item in dir_items:
-            index.append(f"- 📁 [{item['dir']}]({item['rel_path']})\n")
-        index.append("\n---\n\n")
-        # Add H2 entries so main README can build a menu from this file if needed
-        for item in dir_items:
-            index.append(f"## {item['dir']}\n\n")
-            index.append(f"- 📄 Подробнее: [{item['rel_path']}]({item['rel_path']})\n\n")
+            link = self._doc_href(str(item["rel_path"]))
+            summ = self._function_group_summary(item["functions"])  # type: ignore[index]
+            dtitle = str(item["dir"])
+            index.append(f"- [{dtitle}]({link}) — *{summ}*\n")
         index.append("\n---\n\n")
         index.extend(self._sections_nav(current_depth=1))
 
         (self.sections_dir / "functions.md").write_text("\n".join(index), encoding="utf-8")
-    
+
+    @staticmethod
+    def _receiver_short_type(receiver: Optional[str]) -> Optional[str]:
+        """Best-effort receiver type name for TestType_Method heuristics."""
+        if not receiver:
+            return None
+        m = re.search(r"\*\s*([\w.]+)", receiver)
+        if m:
+            return m.group(1).split(".")[-1]
+        m = re.search(r"\([^)]*\b([\w.]+)\s*\)\s*$", receiver.strip())
+        if m:
+            return m.group(1).split(".")[-1]
+        return None
+
+    def _test_names_and_subtests(self, tests: Dict) -> Tuple[Dict[str, str], Dict[str, List[str]]]:
+        """Map TestName -> file, and TestName -> subtest titles."""
+        name_to_file: Dict[str, str] = {}
+        subtests: Dict[str, List[str]] = {}
+        for t in tests.get("tests") or []:
+            if t.get("type") != "test":
+                continue
+            nm = t.get("name") or ""
+            if not nm.startswith("Test"):
+                continue
+            name_to_file[nm] = str(t.get("file") or "")
+            subtests[nm] = list(t.get("subtests") or [])
+        return name_to_file, subtests
+
+    def _function_matches_tests(
+        self,
+        func: Dict,
+        test_name_set: set,
+        subtests: Dict[str, List[str]],
+    ) -> Tuple[bool, List[str]]:
+        """Heuristic: Go test naming conventions; not full coverage analysis."""
+        name = func.get("name") or ""
+        receiver = func.get("receiver")
+        evidence: List[str] = []
+
+        def check_subtests() -> bool:
+            for tn, sts in subtests.items():
+                for st in sts:
+                    if name and name.lower() in (st or "").lower():
+                        evidence.append(f"{tn} (подтест «{st}»)")
+                        return True
+            return False
+
+        if not receiver:
+            candidates = [f"Test{name}"]
+            for c in candidates:
+                if c in test_name_set:
+                    evidence.append(c)
+                    return True, evidence
+            if check_subtests():
+                return True, evidence
+            return False, []
+
+        rt = self._receiver_short_type(receiver)
+        candidates = [f"Test{name}", f"Test_{name}"]
+        if rt:
+            candidates.extend([f"Test{rt}_{name}", f"Test{rt}__{name}"])
+        for c in candidates:
+            if c in test_name_set:
+                evidence.append(c)
+                return True, evidence
+        if check_subtests():
+            return True, evidence
+        return False, evidence
+
+    def _generate_function_test_registry(self, functions: List[Dict], tests: Dict) -> None:
+        """sections/function_test_registry.md — symbols vs heuristic test presence."""
+        cfg = self.rules.get("function_test_registry") or {}
+        only_exp = bool(cfg.get("only_exported", False))
+        test_name_set = set()
+        name_to_file, subtests_map = self._test_names_and_subtests(tests)
+        test_name_set.update(name_to_file.keys())
+
+        rows: List[str] = []
+        rows.append(self._ai_frontmatter("Реестр функций и тестов", "function_test_registry", chunk_boundary="h2"))
+        rows.append("# Реестр функций и методов и тестов\n\n")
+        rows.append(
+            "Автоматическая эвристика: совпадение с `TestXxx`, `TestType_Method`, подтесты `t.Run`. "
+            "Не заменяет `go test -cover` и может давать ложные срабатывания.\n\n"
+        )
+        rows.extend(self._sections_nav(current_depth=1))
+
+        rows.append("## Таблица\n\n")
+        rows.append("| Символ | Файл:строка | Экспортируемый | Есть тест (эвр.) | Совпадения / тесты |\n")
+        rows.append("|--------|-------------|----------------|------------------|---------------------|\n")
+
+        for func in sorted(
+            functions,
+            key=lambda f: (f.get("file", ""), f.get("line", 0), f.get("name", "")),
+        ):
+            fname = func.get("name") or ""
+            recv = func.get("receiver")
+            if only_exp and not self._is_exported_go_symbol(fname, recv):
+                continue
+            sym = f"({self._receiver_short_type(recv) or '?'}) {fname}" if recv else fname
+            loc = f"`{func.get('file')}:{func.get('line', 0)}`"
+            exported = "да" if self._is_exported_go_symbol(fname, recv) else "нет"
+            ok, ev = self._function_matches_tests(func, test_name_set, subtests_map)
+            has_t = "да" if ok else "нет"
+            ev_s = ", ".join(f"`{e}`" for e in ev[:4]) if ev else "—"
+            if ok and not ev:
+                ev_s = "подтест/эвристика"
+            rows.append(f"| `{sym}` | {loc} | {exported} | {has_t} | {ev_s} |\n")
+
+        rows.append("\n---\n\n")
+        rows.extend(self._sections_nav(current_depth=1))
+        (self.sections_dir / "function_test_registry.md").write_text("".join(rows), encoding="utf-8")
+
+    @staticmethod
+    def _is_exported_go_symbol(name: str, receiver: Optional[str]) -> bool:
+        if not name:
+            return False
+        return bool(name[0].isupper())
+
     def _generate_directory_readme(self, dir_key: str, functions: List[Dict]) -> Dict:
         """Generate README.md for a specific directory."""
         content = []
@@ -1372,6 +1544,28 @@ class DocumentationGenerator:
         arch_path.write_text(arch_diagram, encoding='utf-8')
         
         print(f"Generated PlantUML diagrams: {diagram_path}, {arch_path}")
+
+    def _er_diagram_filename(self) -> str:
+        er = self.rules.get("er_diagram") or {}
+        fmt = (er.get("format") or "puml").lower()
+        return "er_diagram.mmd" if fmt == "mermaid" else "er_diagram.puml"
+
+    def _generate_er_diagram(self, tables: Dict) -> None:
+        """Write diagrams/er_diagram.puml or er_diagram.mmd from migration TableDef map."""
+        if not tables:
+            return
+        from generators.er_diagram_generator import generate_mermaid_er, generate_plantuml_er
+
+        er = self.rules.get("er_diagram") or {}
+        fmt = (er.get("format") or "puml").lower()
+        if fmt == "mermaid":
+            body = generate_mermaid_er(tables)
+            out = self.diagrams_dir / "er_diagram.mmd"
+        else:
+            body = generate_plantuml_er(tables)
+            out = self.diagrams_dir / "er_diagram.puml"
+        out.write_text(body, encoding="utf-8")
+        print(f"Generated ER diagram: {out}")
     
     def _extract_section_titles(self, content: str) -> List[tuple]:
         """Extract all section titles (h1, h2) from markdown content."""
@@ -1399,8 +1593,10 @@ class DocumentationGenerator:
             "functions": "Функции",
             "api": "Спецификация API",
             "tests": "Тестирование",
+            "function_test_registry": "Реестр функций и тестов",
             "libraries": "Используемые библиотеки",
             "others_user": "Прочее",
+            "changelog": "CHANGELOG",
         }
 
         order = self.rules.get("readme_order") or [
@@ -1414,6 +1610,7 @@ class DocumentationGenerator:
             "tests",
             "libraries",
             "others_user",
+            "changelog",
         ]
 
         # User documentation directory: <go_repo>/docs/ (from source repository)
@@ -1442,6 +1639,7 @@ class DocumentationGenerator:
             c = read_if_exists(p)
             if not c:
                 return None
+            href = self._doc_href(rel_path)
             # show only H2 menu (avoid huge output)
             h2 = []
             for level, t in self._extract_section_titles(c):
@@ -1451,11 +1649,11 @@ class DocumentationGenerator:
                     continue
                 h2.append(t)
             parts = [f"## {title}\n\n"]
-            parts.append(f"- 📄 Подробнее: [{rel_path}]({rel_path})\n")
+            parts.append(f"- 📄 Подробнее: [{rel_path}]({href})\n")
             if h2:
                 parts.append("- 📚 Меню:\n")
                 for t in h2:
-                    parts.append(f"  - 🔗 [{t}]({rel_path}#{self._create_anchor_link(t)})\n")
+                    parts.append(f"  - 🔗 [{t}]({href}#{self._create_anchor_link(t)})\n")
             parts.append("\n")
             return "".join(parts)
 
@@ -1482,7 +1680,10 @@ class DocumentationGenerator:
             return "".join(parts)
 
         for key in order:
-            if not is_enabled(self.rules, key):
+            if key == "function_test_registry":
+                if not is_function_test_registry_enabled(self.rules):
+                    continue
+            elif not is_enabled(self.rules, key):
                 continue
 
             title = titles_ru.get(key, key)
@@ -1496,20 +1697,40 @@ class DocumentationGenerator:
                 # Look in <go_repo>/docs/db.md
                 c = user_section(title, "db.md")
                 if c:
+                    er = self.rules.get("er_diagram") or {}
+                    er_name = self._er_diagram_filename()
+                    er_path = self.diagrams_dir / er_name
+                    if er.get("link_in_db_section") and er_path.exists():
+                        c = (
+                            c.rstrip()
+                            + "\n\n### ER по миграциям\n\n"
+                            + f"- [Диаграмма]({self._doc_href('diagrams/' + er_name)})\n"
+                        )
                     sections_content.append((title, c))
             elif key == "diagrams":
-                if component_info and component_info.get("components"):
-                    parts = [f"## {title}\n\n"]
-                    parts.append("Диаграммы сохраняются в директорию `diagrams/`.\n\n")
-                    parts.append("- 📄 Подробнее: [diagrams/](diagrams/)\n")
-                    component_diagram_path = self.diagrams_dir / "component_diagram.puml"
-                    if component_diagram_path.exists():
-                        parts.append("- 🔗 [Зависимости компонентов](diagrams/component_diagram.puml)\n")
-                    arch_diagram_path = self.diagrams_dir / "architecture_diagram.puml"
-                    if arch_diagram_path.exists():
-                        parts.append("- 🔗 [Архитектура сервиса](diagrams/architecture_diagram.puml)\n")
-                    parts.append("\n")
-                    sections_content.append((title, "".join(parts)))
+                h = self._doc_href
+                has_comp = bool(component_info and component_info.get("components"))
+                er_name = self._er_diagram_filename()
+                has_er = (self.diagrams_dir / er_name).exists()
+                if not has_comp and not has_er:
+                    continue
+                parts = [f"## {title}\n\n"]
+                parts.append("Диаграммы сохраняются в директорию `diagrams/`.\n\n")
+                parts.append(f"- 📄 Подробнее: [diagrams/]({h('diagrams/')})\n")
+                component_diagram_path = self.diagrams_dir / "component_diagram.puml"
+                if has_comp and component_diagram_path.exists():
+                    parts.append(
+                        f"- 🔗 [Зависимости компонентов]({h('diagrams/component_diagram.puml')})\n"
+                    )
+                arch_diagram_path = self.diagrams_dir / "architecture_diagram.puml"
+                if has_comp and arch_diagram_path.exists():
+                    parts.append(
+                        f"- 🔗 [Архитектура сервиса]({h('diagrams/architecture_diagram.puml')})\n"
+                    )
+                if has_er:
+                    parts.append(f"- 🔗 [ER (миграции)]({h('diagrams/' + er_name)})\n")
+                parts.append("\n")
+                sections_content.append((title, "".join(parts)))
             elif key == "imports":
                 c = menu_only("Импорты", "sections/imports.md")
                 if c:
@@ -1530,10 +1751,20 @@ class DocumentationGenerator:
                 c = menu_only("Тестирование", "sections/tests.md")
                 if c:
                     sections_content.append(("Тестирование", c))
+            elif key == "function_test_registry":
+                c = menu_only("Реестр функций и тестов", "sections/function_test_registry.md")
+                if c:
+                    sections_content.append(("Реестр функций и тестов", c))
             elif key == "libraries":
                 c = menu_only("Используемые библиотеки", "sections/libraries.md")
                 if c:
                     sections_content.append(("Используемые библиотеки", c))
+            elif key == "changelog":
+                changelog_path = self.docs_dir / "CHANGELOG.md"
+                if changelog_path.exists():
+                    parts = [f"## {title}\n\n"]
+                    parts.append(f"- 📄 [CHANGELOG]({self._doc_href('CHANGELOG.md')})\n\n")
+                    sections_content.append((title, "".join(parts)))
             elif key == "others_user":
                 # Look for other .md files in <go_repo>/docs/ (excluding architecture.md, db.md)
                 if user_dir and user_dir.exists():
