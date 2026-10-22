@@ -1,0 +1,40 @@
+# CI master-spec. Каждый MR проходит spec_guard: роль ветки меняет только свои файлы.
+# Переменные CI/CD: AI_FIRST_REPO_URL — репозиторий ai-first со скриптами и реестром компонентов;
+# WIKI_TRIGGER_TOKEN, WIKI_PROJECT_ID — триггер CI ai-first для страницы изменения.
+
+spec-guard:
+  image: node:22-bookworm
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  variables:
+    GIT_DEPTH: "0"
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 git
+    - npm install -g -s @fission-ai/openspec@1.14.3
+    - git clone -q --depth 1 "$AI_FIRST_REPO_URL" /tmp/ai-first
+    - git fetch -q origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - git checkout -q -B "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
+  script:
+    - python3 /tmp/ai-first/scripts/spec_guard.py --repo .
+
+validate-main:
+  image: node:22-bookworm
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - npm install -g -s @fission-ai/openspec@1.14.3
+    - openspec validate --specs --strict --no-interactive
+
+notify-wiki:
+  image: curlimages/curl:8.10.1
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_MESSAGE =~ /Merge branch .change\//'
+  script:
+    - KEY=$(echo "$CI_COMMIT_MESSAGE" | sed -n "s/.*Merge branch .change\/\([A-Z][A-Z0-9]*-[0-9]*\).*/\1/p" | head -1)
+    - test -n "$KEY" || { echo "Ключ не найден"; exit 0; }
+    - >
+      curl -sf -X POST
+      -F token="$WIKI_TRIGGER_TOKEN" -F ref=main
+      -F "variables[DOCS_EVENT]=spec-merged"
+      -F "variables[KEY]=$KEY"
+      "$CI_API_V4_URL/projects/$WIKI_PROJECT_ID/trigger/pipeline"

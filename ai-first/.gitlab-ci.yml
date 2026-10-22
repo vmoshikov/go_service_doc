@@ -1,0 +1,91 @@
+# CI ai-first. В wiki пишет только этот CI. Все job записи идут по одному: resource_group wiki-writer.
+#
+# События (trigger API, переменная DOCS_EVENT):
+#   component-tag  COMPONENT_REPO, TAG — тег в репозитории компонента   → wiki/code/<компонент>/
+#   release        CHARTS_TAG          — тег репозитория чартов          → wiki/code/releases/<тег>.md, config.md
+#   spec-merged    KEY                 — merge в master-spec             → wiki/changes/<KEY>.md
+#   schedule (без DOCS_EVENT)          — сверка страниц изменений по Jira → wiki/changes/
+# Шаблоны триггеров: templates/component-ci/, templates/charts-ci/, templates/master-spec/.gitlab-ci.yml.
+#
+# Переменные CI/CD (masked): JIRA_TOKEN, GITLAB_TOKEN — токены бота; PUSH_TOKEN — write_repository;
+# OPENAI_API_KEY — ключ LLM-шлюза для текста wiki/code (без него генератор пишет только факты);
+# CHARTS_REPO_URL, MASTER_SPEC_REPO_URL — адреса клонирования с доступом бота.
+
+stages: [docs, check]
+
+.wiki-writer:
+  stage: docs
+  image: python:3.11-slim
+  resource_group: wiki-writer
+  variables:
+    GIT_DEPTH: "0"
+  cache:
+    key: component-repos
+    paths: [.repos/, .llm-cache/]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates
+    - pip install -q -r requirements.txt
+    - git config --global user.name "wiki-bot" && git config --global user.email "wiki-bot@example.com"
+    - git fetch -q origin "$CI_DEFAULT_BRANCH" && git checkout -q -B "$CI_DEFAULT_BRANCH" "origin/$CI_DEFAULT_BRANCH"
+
+.commit: &commit
+  - python scripts/wiki_lint.py
+  - git add wiki
+  - if git diff --cached --quiet; then echo "Изменений нет."; exit 0; fi
+  - git commit -q -m "$COMMIT_MESSAGE [skip ci]"
+  - |
+    for attempt in 1 2 3; do
+      git pull -q --rebase origin "$CI_DEFAULT_BRANCH" &&
+      git push -q "https://wiki-bot:${PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "HEAD:${CI_DEFAULT_BRANCH}" && exit 0
+      sleep 5
+    done
+    echo "Не удалось отправить коммит после 3 попыток."; exit 1
+
+component-docs:
+  extends: .wiki-writer
+  rules:
+    - if: '$DOCS_EVENT == "component-tag"'
+  script:
+    - export COMMIT_MESSAGE="docs(code): ${COMPONENT_REPO##*/} ${TAG}"
+    - python scripts/code_docs.py "$COMPONENT_REPO" "$TAG" --repos-dir .repos
+    - *commit
+
+release-docs:
+  extends: .wiki-writer
+  rules:
+    - if: '$DOCS_EVENT == "release"'
+  script:
+    - export COMMIT_MESSAGE="docs(release): $CHARTS_TAG"
+    - git clone -q "$CHARTS_REPO_URL" .charts && git -C .charts checkout -q "$CHARTS_TAG"
+    - python scripts/release_docs.py .charts "$CHARTS_TAG" --repos-dir .repos
+    - python scripts/wiki_lint.py
+    - git add wiki
+    - git diff --cached --quiet || git commit -q -m "$COMMIT_MESSAGE [skip ci]"
+    - git tag -f "$CHARTS_TAG"
+    - git pull -q --rebase origin "$CI_DEFAULT_BRANCH"
+    - git push -q "https://wiki-bot:${PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "HEAD:${CI_DEFAULT_BRANCH}" "$CHARTS_TAG"
+
+changes-sync:
+  extends: .wiki-writer
+  rules:
+    - if: '$DOCS_EVENT == "spec-merged"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $DOCS_EVENT == null'
+  script:
+    - export COMMIT_MESSAGE="docs(changes): ${KEY:-сверка}"
+    - git clone -q "$MASTER_SPEC_REPO_URL" .master-spec
+    - python scripts/changes_sync.py --master-spec .master-spec ${KEY:+--key "$KEY"}
+    - *commit
+
+check:
+  stage: check
+  image: python:3.11-slim
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
+    - pip install -q -r requirements.txt
+    - if git ls-files --error-unmatch config.json 2>/dev/null; then echo "config.json в git"; exit 1; fi
+    - python scripts/check_skills.py
+    - python scripts/build_agents_md.py --check
+    - python scripts/wiki_index.py --check
+    - python scripts/wiki_lint.py

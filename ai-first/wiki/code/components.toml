@@ -1,0 +1,35 @@
+# Реестр компонентов платформы. Единственный файл раздела Code, который правят руками.
+#
+# [components.<имя>] — компонент: свой образ и свой чарт в репозитории чартов.
+#   repo      — git-репозиторий кода. Тег образа равен git-тегу этого репозитория.
+#   chart     — каталог чарта в репозитории чартов.
+#   tag       — где записан тег образа: «файл#путь.к.ключу». По умолчанию <chart>/values.yaml#image.tag.
+#   overrides — необязательно: значения платформы поверх values чарта, «файл#путь».
+#   owner     — команда-владелец.
+#   reviewers — необязательно: логины GitLab. Скрипты назначают их ревьюерами MR спецификации и MR кода.
+#
+# [modules.<имя>] — общий Go-модуль: отдельно не разворачивается, его импортируют компоненты.
+#   repo, module (путь Go-модуля из go.mod), owner.
+#
+# Каждый чарт репозитория чартов должен быть описан здесь. Иначе release_docs.py завершится с ошибкой.
+
+[charts]
+repo = "https://gitlab.example.com/mk8s/charts.git"
+
+[changelog]
+# Ссылка на задачу. {key} заменяется ключом из имени ветки, например MK8S-123.
+task_url = "https://jira.example.com/browse/{key}"
+
+# Пример компонента. Замени на реальные.
+# [components.etcd-backup]
+# repo = "https://gitlab.example.com/mk8s/etcd-backup.git"
+# chart = "charts/etcd-backup"
+# overrides = "platform/values.yaml#etcdBackup"
+# owner = "team-control-plane"
+# reviewers = ["ivanov", "petrova"]
+
+# Пример общего модуля.
+# [modules.core]
+# repo = "https://gitlab.example.com/mk8s/core.git"
+# module = "gitlab.example.com/mk8s/core"
+# owner = "team-core"

@@ -1,0 +1,6 @@
+- id: Search
+  translation: Поиск
+
+- id: bookSearchConfig
+  # Fuse.js: более мягкий threshold для кириллицы, ignoreDiacritics для ё/е
+  translation: '{"threshold": 0.4, "ignoreDiacritics": true}'

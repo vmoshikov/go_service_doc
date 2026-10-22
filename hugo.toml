@@ -1,0 +1,33 @@
+baseURL = "http://localhost:1313/"
+defaultContentLanguage = "ru"
+title = "Документация Go сервисов"
+
+[languages.ru]
+  languageCode = "ru-ru"
+  title = "Документация Go сервисов"
+
+# Тема Hugo Book: https://themes.gohugo.io/themes/hugo-book/
+[module]
+[[module.imports]]
+path = "github.com/alex-shpak/hugo-book"
+
+# Источник контента — сгенерированные docs (mount нужен при использовании модулей)
+[[module.mounts]]
+source = "docs"
+target = "content"
+
+# Настройки разметки (нужно для shortcodes)
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true
+
+[params]
+  description = "Автогенерируемая документация Go сервисов"
+  # Показать все секции в меню (indigo, kubernetes, kagent)
+  BookSection = "*"
+  BookTheme = "light"
+  BookToC = true
+  # Встроенный поиск FlexSearch
+  BookSearch = true
+  BookComments = false

@@ -1,0 +1,48 @@
+name: mk8s
+version: 1
+description: >-
+  Workflow платформы Managed Kubernetes. Intent и discovery аналитика лежат в служебной папке openspec/changes/intents/<id>/.
+  OpenSpec change создаёт разработчик: delta-спеки, design и tasks. Агент реализует tasks в репозиториях компонентов.
+artifacts:
+  - id: specs
+    generates: "specs/**/*.md"
+    description: Delta-спеки разработчика
+    template: spec.md
+    instruction: |
+      Роль: разработчик. Сначала прочитай intent: путь в поле x-intent файла .openspec.yaml.
+      Рядом лежит discovery.md: исследование, интервью, выбранная точка внедрения.
+      Не меняй intent.md и discovery.md. Если intent неясен, верни задачу: developer.py reject.
+      Опиши наблюдаемое поведение, которое меняет intent: API, CRD, конфигурацию, ошибки, метрики.
+      Каждый критерий приёмки intent покрой хотя бы одним сценарием.
+      Перед записью найди существующие capability: openspec list --specs. Используй их точный путь.
+      Формат: «## ADDED|MODIFIED|REMOVED|RENAMED Requirements», «### Requirement: <имя>»,
+      «#### Scenario: <имя>» с WHEN/THEN. Нормативные слова: SHALL, MUST.
+      Для новой capability первый раздел — «## Purpose».
+      Если поведение не меняется, поставь skip_specs: true в .openspec.yaml.
+    requires: []
+
+  - id: design
+    generates: design.md
+    description: Технический дизайн
+    template: design.md
+    instruction: |
+      Роль: разработчик. Опиши, КАК реализовать intent (x-intent) в компонентах платформы.
+      Исходи из выбранного варианта в discovery.md.
+      Перед записью прочитай wiki: python scripts/wiki_context.py -c <компонент>.
+      Укажи изменения по каждому компоненту, совместимость версий, миграции, откат.
+    requires: []
+
+  - id: tasks
+    generates: tasks.md
+    description: Задачи для агента по компонентам
+    template: tasks.md
+    instruction: |
+      Роль: разработчик. Группа задач — один компонент: «## 1. <компонент>».
+      Имя группы — имя из wiki/code/components.toml и из раздела «Компоненты» intent.
+      Задача — одно проверяемое действие: «- [ ] <действие> → проверка: <тест или команда>».
+      Агент отмечает [x] только после проверки.
+    requires: [specs, design]
+
+apply:
+  requires: [tasks]
+  tracks: tasks.md

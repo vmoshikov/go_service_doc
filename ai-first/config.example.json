@@ -1,0 +1,71 @@
+{
+  "_doc": "Командные значения по умолчанию (файл в git). Личный config.json (не в git) перекрывает любые поля. В config.json держи только role, токены, openai и repos. Описание полей: skills/tracker/SKILL.md.",
+  "role": "",
+  "jira": {
+    "url": "https://jira.example.com",
+    "auth": "bearer",
+    "token": "",
+    "email": "",
+    "project": "MK8S",
+    "cr_types": [
+      "Change Request"
+    ],
+    "labels": [
+      "SDD",
+      "TA"
+    ],
+    "inbox_jql": "project = MK8S AND issuetype = \"Change Request\" AND status = \"Open\" ORDER BY priority DESC, created ASC",
+    "dev_queue_jql": "project = MK8S AND status = \"Ready for Dev\" AND (assignee = currentUser() OR assignee is EMPTY) ORDER BY priority DESC",
+    "status": {
+      "intake": [
+        "Open"
+      ],
+      "analysis": "Analysis",
+      "intent_review": "Intent Review",
+      "ready_for_dev": "Ready for Dev",
+      "in_progress": "In Progress",
+      "code_review": "Code Review",
+      "ready_for_qa": "Ready for QA"
+    },
+    "branch_prefix": {
+      "Change Request": "feature",
+      "Bug": "fix"
+    }
+  },
+  "gitlab": {
+    "url": "https://gitlab.example.com",
+    "token": "",
+    "default_branch": "main",
+    "wiki_project": "mk8s/ai-first",
+    "role_groups": {}
+  },
+  "master_spec": {
+    "project": "mk8s/master-spec",
+    "clone_url": "https://gitlab.example.com/mk8s/master-spec.git",
+    "schema": "mk8s",
+    "intents_dir": "openspec/changes/intents"
+  },
+  "openai": {
+    "api_key": "",
+    "base_url": "https://llm-gateway.example.local/v1",
+    "model": ""
+  },
+  "docs_llm": {
+    "enabled": true,
+    "model": "",
+    "max_calls": 300,
+    "max_input_chars": 24000,
+    "cache_dir": ".llm-cache"
+  },
+  "repos": {
+    "master-spec": "../master-spec"
+  },
+  "cache_dir": "~/.cache/mk8s-flow",
+  "gates": {
+    "qa_requires": "merged"
+  },
+  "review": {
+    "intent_reviewers": [],
+    "spec_reviewers": []
+  }
+}

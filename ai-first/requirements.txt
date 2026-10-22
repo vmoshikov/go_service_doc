@@ -1,0 +1,4 @@
+# Генератор документации кода (release_docs.py, code_docs.py).
+pyyaml>=6.0
+tree-sitter>=0.25
+tree-sitter-go>=0.25

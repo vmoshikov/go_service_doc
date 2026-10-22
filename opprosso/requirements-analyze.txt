@@ -1,0 +1,2 @@
+# Для analyze_survey_xlsx.py
+openpyxl>=3.1.0

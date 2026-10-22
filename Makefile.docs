@@ -1,0 +1,11 @@
+# Сборка и запуск сайта документации (Hugo + Pagefind)
+# Использование: make -f Makefile.docs build | serve
+
+.PHONY: build serve
+
+build:
+	hugo --minify
+	npx -y pagefind --site public
+
+serve: build
+	npx -y pagefind --site public --serve

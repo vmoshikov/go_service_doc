@@ -1,0 +1,615 @@
+@startuml Component Dependencies
+!theme plain
+skinparam componentStyle rectangle
+skinparam linetype ortho
+
+title Component Dependencies
+
+package "API Components" {
+  component "api/agnostic" as api_agnostic
+  note right of api_agnostic
+    Package: agnostic
+    Files: 11
+  end note
+  component "api/atproto" as api_atproto
+  note right of api_atproto
+    Package: atproto
+    Files: 95
+  end note
+  component "api/bsky" as api_bsky
+  note right of api_bsky
+    Package: bsky
+    Files: 138
+  end note
+  component "api/chat" as api_chat
+  note right of api_chat
+    Package: chat
+    Files: 26
+  end note
+  component "api/ozone" as api_ozone
+  note right of api_ozone
+    Package: ozone
+    Files: 54
+  end note
+  component "atproto/identity/apidir" as atproto_identity_apidir
+  note right of atproto_identity_apidir
+    Package: apidir
+    Files: 3
+  end note
+}
+
+package "Data Components" {
+  component "atproto/atdata" as atproto_atdata
+  note right of atproto_atdata
+    Package: atdata
+    Files: 9
+  end note
+  component "atproto/identity" as atproto_identity
+  note right of atproto_identity
+    Package: identity
+    Files: 13
+  end note
+  component "atproto/identity/cmd/atp-id" as atproto_identity_cmd_atp_id
+  note right of atproto_identity_cmd_atp_id
+    Package: main
+    Files: 1
+  end note
+  component "atproto/identity/redisdir" as atproto_identity_redisdir
+  note right of atproto_identity_redisdir
+    Package: redisdir
+    Files: 4
+  end note
+  component "atproto/repo" as atproto_repo
+  note right of atproto_repo
+    Package: repo
+    Files: 8
+  end note
+  component "atproto/repo/cmd/repo-tool" as atproto_repo_cmd_repo_tool
+  note right of atproto_repo_cmd_repo_tool
+    Package: main
+    Files: 2
+  end note
+  component "atproto/repo/mst" as atproto_repo_mst
+  note right of atproto_repo_mst
+    Package: mst
+    Files: 10
+  end note
+  component "cmd/relay/relay/models" as cmd_relay_relay_models
+  note right of cmd_relay_relay_models
+    Package: models
+    Files: 3
+  end note
+  component "cmd/tap/models" as cmd_tap_models
+  note right of cmd_tap_models
+    Package: models
+    Files: 1
+  end note
+  component "events/dbpersist" as events_dbpersist
+  note right of events_dbpersist
+    Package: dbpersist
+    Files: 1
+  end note
+  component "fakedata" as fakedata
+  note right of fakedata
+    Package: fakedata
+    Files: 2
+  end note
+  component "models" as models
+  note right of models
+    Package: models
+    Files: 4
+  end note
+  component "repo" as repo
+  note right of repo
+    Package: repo
+    Files: 3
+  end note
+  component "repo/carutil" as repo_carutil
+  note right of repo_carutil
+    Package: carutil
+    Files: 1
+  end note
+  component "repomgr" as repomgr
+  note right of repomgr
+    Package: repomgr
+    Files: 2
+  end note
+  component "repomgr/keymgr" as repomgr_keymgr
+  note right of repomgr_keymgr
+    Package: keymgr
+    Files: 1
+  end note
+  component "testing/pdsmodels" as testing_pdsmodels
+  note right of testing_pdsmodels
+    Package: pdsmodels
+    Files: 1
+  end note
+}
+
+package "Other Components" {
+  component "atproto/atclient" as atproto_atclient
+  note right of atproto_atclient
+    Package: atclient
+    Files: 8
+  end note
+  component "atproto/atclient/cmd/atp-client-demo" as atproto_atclient_cmd_atp_client_demo
+  note right of atproto_atclient_cmd_atp_client_demo
+    Package: main
+    Files: 1
+  end note
+  component "atproto/atcrypto" as atproto_atcrypto
+  note right of atproto_atcrypto
+    Package: atcrypto
+    Files: 6
+  end note
+  component "atproto/atcrypto/cmd/atp-crypto" as atproto_atcrypto_cmd_atp_crypto
+  note right of atproto_atcrypto_cmd_atp_crypto
+    Package: main
+    Files: 1
+  end note
+  component "atproto/auth" as atproto_auth
+  note right of atproto_auth
+    Package: auth
+    Files: 6
+  end note
+  component "atproto/auth/oauth" as atproto_auth_oauth
+  note right of atproto_auth_oauth
+    Package: oauth
+    Files: 9
+  end note
+  component "atproto/auth/oauth/cmd/oauth-web-demo" as atproto_auth_oauth_cmd_oauth_web_demo
+  note right of atproto_auth_oauth_cmd_oauth_web_demo
+    Package: main
+    Files: 1
+  end note
+  component "atproto/labeling" as atproto_labeling
+  note right of atproto_labeling
+    Package: labeling
+    Files: 2
+  end note
+  component "atproto/lexicon" as atproto_lexicon
+  note right of atproto_lexicon
+    Package: lexicon
+    Files: 9
+  end note
+  component "atproto/lexicon/cmd/lextool" as atproto_lexicon_cmd_lextool
+  note right of atproto_lexicon_cmd_lextool
+    Package: main
+    Files: 2
+  end note
+  component "atproto/syntax" as atproto_syntax
+  note right of atproto_syntax
+    Package: syntax
+    Files: 13
+  end note
+  component "atproto/syntax/cmd/atp-syntax" as atproto_syntax_cmd_atp_syntax
+  note right of atproto_syntax_cmd_atp_syntax
+    Package: main
+    Files: 1
+  end note
+  component "automod" as automod
+  note right of automod
+    Package: automod
+    Files: 2
+  end note
+  component "automod/cachestore" as automod_cachestore
+  note right of automod_cachestore
+    Package: cachestore
+    Files: 4
+  end note
+  component "automod/capture" as automod_capture
+  note right of automod_capture
+    Package: capture
+    Files: 4
+  end note
+  component "automod/consumer" as automod_consumer
+  note right of automod_consumer
+    Package: consumer
+    Files: 3
+  end note
+  component "automod/countstore" as automod_countstore
+  note right of automod_countstore
+    Package: countstore
+    Files: 4
+  end note
+  component "automod/engine" as automod_engine
+  note right of automod_engine
+    Package: engine
+    Files: 19
+  end note
+  component "automod/flagstore" as automod_flagstore
+  note right of automod_flagstore
+    Package: flagstore
+    Files: 5
+  end note
+  component "automod/helpers" as automod_helpers
+  note right of automod_helpers
+    Package: helpers
+    Files: 3
+  end note
+  component "automod/keyword" as automod_keyword
+  note right of automod_keyword
+    Package: keyword
+    Files: 5
+  end note
+  component "automod/keyword/cmd/kw-cli" as automod_keyword_cmd_kw_cli
+  note right of automod_keyword_cmd_kw_cli
+    Package: main
+    Files: 1
+  end note
+  component "automod/rules" as automod_rules
+  note right of automod_rules
+    Package: rules
+    Files: 19
+  end note
+  component "automod/setstore" as automod_setstore
+  note right of automod_setstore
+    Package: setstore
+    Files: 2
+  end note
+  component "automod/visual" as automod_visual
+  note right of automod_visual
+    Package: visual
+    Files: 8
+  end note
+  component "backfill" as backfill
+  note right of backfill
+    Package: backfill
+    Files: 5
+  end note
+  component "carstore" as carstore
+  note right of carstore
+    Package: carstore
+    Files: 9
+  end note
+  component "cmd/beemo" as cmd_beemo
+  note right of cmd_beemo
+    Package: main
+    Files: 5
+  end note
+  component "cmd/bluepages" as cmd_bluepages
+  note right of cmd_bluepages
+    Package: main
+    Files: 6
+  end note
+  component "cmd/collectiondir" as cmd_collectiondir
+  note right of cmd_collectiondir
+    Package: main
+    Files: 6
+  end note
+  component "cmd/fakermaker" as cmd_fakermaker
+  note right of cmd_fakermaker
+    Package: main
+    Files: 1
+  end note
+  component "cmd/gosky" as cmd_gosky
+  note right of cmd_gosky
+    Package: main
+    Files: 11
+  end note
+  component "cmd/hepa" as cmd_hepa
+  note right of cmd_hepa
+    Package: main
+    Files: 3
+  end note
+  component "cmd/lexgen" as cmd_lexgen
+  note right of cmd_lexgen
+    Package: main
+    Files: 1
+  end note
+  component "cmd/netsync" as cmd_netsync
+  note right of cmd_netsync
+    Package: main
+    Files: 1
+  end note
+  component "cmd/palomar" as cmd_palomar
+  note right of cmd_palomar
+    Package: main
+    Files: 1
+  end note
+  component "cmd/rainbow" as cmd_rainbow
+  note right of cmd_rainbow
+    Package: main
+    Files: 1
+  end note
+  component "cmd/relay" as cmd_relay
+  note right of cmd_relay
+    Package: main
+    Files: 8
+  end note
+  component "cmd/relay/relay" as cmd_relay_relay
+  note right of cmd_relay_relay
+    Package: relay
+    Files: 14
+  end note
+  component "cmd/relay/stream" as cmd_relay_stream
+  note right of cmd_relay_stream
+    Package: stream
+    Files: 5
+  end note
+  component "cmd/relay/stream/eventmgr" as cmd_relay_stream_eventmgr
+  note right of cmd_relay_stream_eventmgr
+    Package: eventmgr
+    Files: 4
+  end note
+  component "cmd/relay/stream/persist" as cmd_relay_stream_persist
+  note right of cmd_relay_stream_persist
+    Package: persist
+    Files: 1
+  end note
+  component "cmd/relay/stream/persist/diskpersist" as cmd_relay_stream_persist_diskpersist
+  note right of cmd_relay_stream_persist_diskpersist
+    Package: diskpersist
+    Files: 1
+  end note
+  component "cmd/relay/stream/schedulers" as cmd_relay_stream_schedulers
+  note right of cmd_relay_stream_schedulers
+    Package: schedulers
+    Files: 2
+  end note
+  component "cmd/relay/stream/schedulers/parallel" as cmd_relay_stream_schedulers_parallel
+  note right of cmd_relay_stream_schedulers_parallel
+    Package: parallel
+    Files: 1
+  end note
+  component "cmd/relay/stream/schedulers/sequential" as cmd_relay_stream_schedulers_sequential
+  note right of cmd_relay_stream_schedulers_sequential
+    Package: sequential
+    Files: 1
+  end note
+  component "cmd/relay/testing" as cmd_relay_testing
+  note right of cmd_relay_testing
+    Package: testing
+    Files: 4
+  end note
+  component "cmd/sonar" as cmd_sonar
+  note right of cmd_sonar
+    Package: main
+    Files: 3
+  end note
+  component "cmd/stress" as cmd_stress
+  note right of cmd_stress
+    Package: main
+    Files: 1
+  end note
+  component "cmd/tap" as cmd_tap
+  note right of cmd_tap
+    Package: main
+    Files: 14
+  end note
+  component "events" as events
+  note right of events
+    Package: events
+    Files: 5
+  end note
+  component "events/diskpersist" as events_diskpersist
+  note right of events_diskpersist
+    Package: diskpersist
+    Files: 1
+  end note
+  component "events/pebblepersist" as events_pebblepersist
+  note right of events_pebblepersist
+    Package: pebblepersist
+    Files: 1
+  end note
+  component "events/schedulers" as events_schedulers
+  note right of events_schedulers
+    Package: schedulers
+    Files: 2
+  end note
+  component "events/schedulers/autoscaling" as events_schedulers_autoscaling
+  note right of events_schedulers_autoscaling
+    Package: autoscaling
+    Files: 2
+  end note
+  component "events/schedulers/parallel" as events_schedulers_parallel
+  note right of events_schedulers_parallel
+    Package: parallel
+    Files: 1
+  end note
+  component "events/schedulers/sequential" as events_schedulers_sequential
+  note right of events_schedulers_sequential
+    Package: sequential
+    Files: 1
+  end note
+  component "events/yolopersist" as events_yolopersist
+  note right of events_yolopersist
+    Package: yolopersist
+    Files: 1
+  end note
+  component "gen" as gen
+  note right of gen
+    Package: main
+    Files: 1
+  end note
+  component "lex" as lex
+  note right of lex
+    Package: lex
+    Files: 3
+  end note
+  component "lex/lexgen" as lex_lexgen
+  note right of lex_lexgen
+    Package: lexgen
+    Files: 4
+  end note
+  component "lex/lexlint" as lex_lexlint
+  note right of lex_lexlint
+    Package: lexlint
+    Files: 3
+  end note
+  component "lex/util" as lex_util
+  note right of lex_util
+    Package: util
+    Files: 5
+  end note
+  component "mst" as mst
+  note right of mst
+    Package: mst
+    Files: 4
+  end note
+  component "search" as search
+  note right of search
+    Package: search
+    Files: 11
+  end note
+  component "splitter" as splitter
+  note right of splitter
+    Package: splitter
+    Files: 5
+  end note
+  component "testing" as testing
+  note right of testing
+    Package: testing
+    Files: 1
+  end note
+  component "util" as util
+  note right of util
+    Package: util
+    Files: 6
+  end note
+  component "util/cliutil" as util_cliutil
+  note right of util_cliutil
+    Package: cliutil
+    Files: 2
+  end note
+  component "util/labels" as util_labels
+  note right of util_labels
+    Package: labels
+    Files: 2
+  end note
+  component "util/ssrf" as util_ssrf
+  note right of util_ssrf
+    Package: ssrf
+    Files: 1
+  end note
+  component "util/svcutil" as util_svcutil
+  note right of util_svcutil
+    Package: svcutil
+    Files: 2
+  end note
+  component "util/tracing" as util_tracing
+  note right of util_tracing
+    Package: tracing
+    Files: 1
+  end note
+  component "xrpc" as xrpc
+  note right of xrpc
+    Package: xrpc
+    Files: 1
+  end note
+}
+
+' Dependencies
+skinparam maxMessageSize 60
+lex_util --> api_agnostic
+atproto_identity --> atproto_atclient
+atproto_atclient --> atproto_atclient_cmd_atp_client_demo
+atproto_identity --> atproto_atclient_cmd_atp_client_demo
+atproto_atcrypto --> atproto_atcrypto_cmd_atp_crypto
+atproto_identity --> atproto_auth
+atproto_identity --> atproto_auth_oauth
+util_ssrf --> atproto_auth_oauth
+atproto_auth_oauth --> atproto_auth_oauth_cmd_oauth_web_demo
+atproto_identity --> atproto_auth_oauth_cmd_oauth_web_demo
+atproto_identity --> atproto_identity_apidir
+atproto_identity --> atproto_identity_cmd_atp_id
+atproto_identity --> atproto_identity_redisdir
+atproto_atclient --> atproto_lexicon
+atproto_atdata --> atproto_lexicon
+atproto_identity --> atproto_lexicon
+atproto_atdata --> atproto_lexicon_cmd_lextool
+atproto_identity --> atproto_lexicon_cmd_lextool
+atproto_lexicon --> atproto_lexicon_cmd_lextool
+atproto_atcrypto --> atproto_repo
+atproto_atdata --> atproto_repo
+atproto_identity --> atproto_repo
+atproto_syntax --> atproto_repo
+mst --> atproto_repo
+atproto_identity --> atproto_repo_cmd_repo_tool
+atproto_repo --> atproto_repo_cmd_repo_tool
+atproto_syntax --> atproto_repo_cmd_repo_tool
+cmd_relay_stream_schedulers_parallel --> atproto_repo_cmd_repo_tool
+atproto_syntax --> atproto_syntax_cmd_atp_syntax
+automod --> automod_capture
+automod --> automod_consumer
+cmd_relay_stream_schedulers_parallel --> automod_consumer
+repomgr --> automod_consumer
+automod_cachestore --> automod_engine
+automod_countstore --> automod_engine
+automod_flagstore --> automod_engine
+automod_keyword --> automod_engine
+automod_setstore --> automod_engine
+automod --> automod_helpers
+automod_keyword --> automod_helpers
+automod_keyword --> automod_keyword_cmd_kw_cli
+automod_setstore --> automod_keyword_cmd_kw_cli
+automod --> automod_rules
+automod_countstore --> automod_rules
+automod --> automod_visual
+lex_util --> automod_visual
+atproto_identity --> backfill
+atproto_repo --> backfill
+atproto_syntax --> backfill
+repomgr --> backfill
+cmd_tap_models --> carstore
+cmd_relay_stream_schedulers_sequential --> cmd_gosky
+cmd_tap_models --> cmd_relay
+cmd_relay_stream --> cmd_relay_relay
+cmd_relay_stream_eventmgr --> cmd_relay_relay
+cmd_relay_stream_schedulers_parallel --> cmd_relay_relay
+cmd_tap_models --> cmd_relay_relay
+cmd_relay_stream --> cmd_relay_stream_eventmgr
+cmd_relay_stream_persist --> cmd_relay_stream_eventmgr
+cmd_relay_stream --> cmd_relay_stream_persist
+cmd_relay_stream --> cmd_relay_stream_persist_diskpersist
+cmd_relay_stream_persist --> cmd_relay_stream_persist_diskpersist
+cmd_relay_stream --> cmd_relay_stream_schedulers_parallel
+cmd_relay_stream_schedulers --> cmd_relay_stream_schedulers_parallel
+cmd_relay_stream --> cmd_relay_stream_schedulers_sequential
+cmd_relay_stream_schedulers --> cmd_relay_stream_schedulers_sequential
+cmd_relay_stream --> cmd_relay_testing
+cmd_relay_stream_eventmgr --> cmd_relay_testing
+cmd_relay_stream_persist_diskpersist --> cmd_relay_testing
+cmd_relay_stream_schedulers_sequential --> cmd_relay_testing
+cmd_relay_testing --> cmd_stress
+cmd_tap_models --> events
+carstore --> events_dbpersist
+cmd_tap_models --> events_dbpersist
+events --> events_dbpersist
+lex_util --> events_dbpersist
+api_atproto --> events_diskpersist
+cmd_tap_models --> events_diskpersist
+events --> events_diskpersist
+cmd_tap_models --> events_pebblepersist
+events --> events_pebblepersist
+cmd_relay_stream_schedulers --> events_schedulers_autoscaling
+events --> events_schedulers_autoscaling
+cmd_relay_stream_schedulers --> events_schedulers_parallel
+events --> events_schedulers_parallel
+cmd_relay_stream_schedulers --> events_schedulers_sequential
+events --> events_schedulers_sequential
+cmd_tap_models --> events_yolopersist
+events --> events_yolopersist
+lex_util --> fakedata
+mst --> gen
+util_labels --> gen
+atproto_repo --> repo
+atproto_syntax --> repo
+lex_util --> repo
+mst --> repo
+carstore --> repomgr
+cmd_tap_models --> repomgr
+lex_util --> repomgr
+mst --> repomgr
+atproto_identity --> search
+atproto_repo --> search
+atproto_syntax --> search
+cmd_relay_stream_schedulers_sequential --> splitter
+cmd_tap_models --> splitter
+lex_util --> splitter
+util_svcutil --> splitter
+atproto_repo --> testing
+cmd_tap_models --> testing_pdsmodels
+lex_util --> xrpc
+
+@enduml

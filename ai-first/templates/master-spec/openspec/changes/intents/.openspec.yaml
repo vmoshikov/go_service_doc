@@ -1,0 +1,5 @@
+# Служебная папка intents аналитиков. Это не change: здесь лежат changes/intents/<key>-<slug>/{discovery,intent}.md.
+# skip_specs нужен, чтобы openspec validate не требовал delta-спек. Не архивируй эту папку и не меняй файл.
+schema: mk8s
+skip_specs: true
+x-role: intents-store

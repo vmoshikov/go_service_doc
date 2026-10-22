@@ -1,0 +1,185 @@
+@startuml Architecture
+!theme plain
+skinparam linetype ortho
+skinparam packageStyle rectangle
+
+title Service Architecture
+
+package "API Layer" {
+  component "go/internal/httpserver/handlers" as go_internal_httpserver_handlers
+  component "go/api/v1alpha2" as go_api_v1alpha2
+  component "go/api/v1alpha1" as go_api_v1alpha1
+  component "go/pkg/client/api" as go_pkg_client_api
+}
+
+package "Data Layer" {
+  component "go/internal/database" as go_internal_database
+  component "go/internal/database/fake" as go_internal_database_fake
+  component "go/pkg/database" as go_pkg_database
+}
+
+package "Other Components" {
+  component "go/cmd/controller" as go_cmd_controller
+  component "go/test/e2e/mocks" as go_test_e2e_mocks
+  component "go/internal/metrics" as go_internal_metrics
+  component "go/internal/a2a" as go_internal_a2a
+  component "go/internal/utils" as go_internal_utils
+  component "go/internal/mcp" as go_internal_mcp
+  component "go/internal/controller" as go_internal_controller
+  component "go/internal/controller/predicates" as go_internal_controller_predicates
+  component "go/internal/controller/provider" as go_internal_controller_provider
+  component "go/internal/controller/translator" as go_internal_controller_translator
+  component "go/internal/controller/translator/labels" as go_internal_controller_translator_labels
+  component "go/internal/controller/translator/agent" as go_internal_controller_translator_agent
+  component "go/internal/controller/reconciler" as go_internal_controller_reconciler
+  component "go/internal/controller/reconciler/utils" as go_internal_controller_reconciler_utils
+  component "go/internal/controller/reconciler/status" as go_internal_controller_reconciler_status
+  component "go/internal/httpserver" as go_internal_httpserver
+  component "go/internal/httpserver/auth" as go_internal_httpserver_auth
+  component "go/internal/httpserver/errors" as go_internal_httpserver_errors
+  component "go/internal/version" as go_internal_version
+  component "go/internal/goruntime" as go_internal_goruntime
+  component "go/hack/mockllm" as go_hack_mockllm
+  component "go/hack/makeagentconfig" as go_hack_makeagentconfig
+  component "go/cli/cmd/kagent" as go_cli_cmd_kagent
+  component "go/cli/internal/config" as go_cli_internal_config
+  component "go/cli/internal/tui" as go_cli_internal_tui
+  component "go/cli/internal/tui/theme" as go_cli_internal_tui_theme
+  component "go/cli/internal/tui/dialogs" as go_cli_internal_tui_dialogs
+  component "go/cli/internal/tui/keys" as go_cli_internal_tui_keys
+  component "go/cli/internal/agent/frameworks" as go_cli_internal_agent_frameworks
+  component "go/cli/internal/agent/frameworks/adk/python" as go_cli_internal_agent_frameworks_adk_python
+  component "go/cli/internal/agent/frameworks/common" as go_cli_internal_agent_frameworks_common
+  component "go/cli/internal/mcp" as go_cli_internal_mcp
+  component "go/cli/internal/mcp/manifests" as go_cli_internal_mcp_manifests
+  component "go/cli/internal/mcp/frameworks" as go_cli_internal_mcp_frameworks
+  component "go/cli/internal/mcp/frameworks/python" as go_cli_internal_mcp_frameworks_python
+  component "go/cli/internal/mcp/frameworks/golang" as go_cli_internal_mcp_frameworks_golang
+  component "go/cli/internal/mcp/frameworks/typescript" as go_cli_internal_mcp_frameworks_typescript
+  component "go/cli/internal/mcp/frameworks/java" as go_cli_internal_mcp_frameworks_java
+  component "go/cli/internal/mcp/frameworks/common" as go_cli_internal_mcp_frameworks_common
+  component "go/cli/internal/mcp/builder" as go_cli_internal_mcp_builder
+  component "go/cli/internal/cli/agent" as go_cli_internal_cli_agent
+  component "go/cli/internal/cli/mcp" as go_cli_internal_cli_mcp
+  component "go/cli/internal/cli/envdoc" as go_cli_internal_cli_envdoc
+  component "go/cli/internal/common/k8s" as go_cli_internal_common_k8s
+  component "go/cli/internal/common/image" as go_cli_internal_common_image
+  component "go/cli/internal/common/generator" as go_cli_internal_common_generator
+  component "go/cli/internal/common/prompt" as go_cli_internal_common_prompt
+  component "go/cli/internal/common/exec" as go_cli_internal_common_exec
+  component "go/cli/internal/common/fs" as go_cli_internal_common_fs
+  component "go/cli/internal/profiles" as go_cli_internal_profiles
+  component "go/pkg/app" as go_pkg_app
+  component "go/pkg/auth" as go_pkg_auth
+  component "go/pkg/utils" as go_pkg_utils
+  component "go/pkg/translator" as go_pkg_translator
+  component "go/pkg/mcp_translator" as go_pkg_mcp_translator
+  component "go/pkg/env" as go_pkg_env
+  component "go/pkg/adk" as go_pkg_adk
+  component "go/pkg/client" as go_pkg_client
+  component "contrib/go-adk/cmd" as contrib_go_adk_cmd
+  component "contrib/go-adk/examples/byo" as contrib_go_adk_examples_byo
+  component "contrib/go-adk/pkg/app" as contrib_go_adk_pkg_app
+  component "contrib/go-adk/pkg/config" as contrib_go_adk_pkg_config
+  component "contrib/go-adk/pkg/auth" as contrib_go_adk_pkg_auth
+  component "contrib/go-adk/pkg/taskstore" as contrib_go_adk_pkg_taskstore
+  component "contrib/go-adk/pkg/a2a" as contrib_go_adk_pkg_a2a
+  component "contrib/go-adk/pkg/a2a/server" as contrib_go_adk_pkg_a2a_server
+  component "contrib/go-adk/pkg/runner" as contrib_go_adk_pkg_runner
+  component "contrib/go-adk/pkg/agent" as contrib_go_adk_pkg_agent
+  component "contrib/go-adk/pkg/mcp" as contrib_go_adk_pkg_mcp
+  component "contrib/go-adk/pkg/models" as contrib_go_adk_pkg_models
+  component "contrib/go-adk/pkg/skills" as contrib_go_adk_pkg_skills
+  component "contrib/go-adk/pkg/telemetry" as contrib_go_adk_pkg_telemetry
+  component "contrib/go-adk/pkg/session" as contrib_go_adk_pkg_session
+}
+
+' Layer Dependencies
+skinparam maxMessageSize 60
+go_internal_database --> go_internal_database_fake
+go_internal_a2a --> go_internal_mcp
+go_internal_controller_translator --> go_internal_controller_translator_agent
+go_internal_controller_translator_labels --> go_internal_controller_translator_agent
+go_internal_utils --> go_internal_controller_translator_agent
+go_internal_utils --> go_internal_controller_reconciler
+go_internal_mcp --> go_internal_controller_reconciler
+go_internal_controller_provider --> go_internal_controller_reconciler
+go_internal_controller_translator --> go_internal_controller_reconciler
+go_internal_database --> go_internal_controller_reconciler
+go_internal_controller_reconciler --> go_internal_httpserver
+go_internal_database --> go_internal_httpserver
+go_internal_mcp --> go_internal_httpserver
+go_internal_a2a --> go_internal_httpserver
+go_internal_httpserver_auth --> go_internal_httpserver_handlers
+go_internal_utils --> go_internal_httpserver_handlers
+go_internal_controller_reconciler --> go_internal_httpserver_handlers
+go_internal_database --> go_internal_httpserver_handlers
+go_internal_httpserver_errors --> go_internal_httpserver_handlers
+go_internal_mcp --> go_cli_cmd_kagent
+go_internal_version --> go_cli_internal_tui
+go_cli_internal_config --> go_cli_internal_tui
+go_internal_utils --> go_cli_internal_tui
+go_cli_internal_tui_theme --> go_cli_internal_tui_dialogs
+go_internal_mcp --> go_cli_internal_mcp_frameworks
+go_cli_internal_agent_frameworks_adk_python --> go_cli_internal_mcp_frameworks
+go_internal_mcp --> go_cli_internal_mcp_frameworks_python
+go_cli_internal_agent_frameworks_common --> go_cli_internal_mcp_frameworks_python
+go_internal_mcp --> go_cli_internal_mcp_frameworks_golang
+go_cli_internal_agent_frameworks_common --> go_cli_internal_mcp_frameworks_golang
+go_internal_mcp --> go_cli_internal_mcp_frameworks_typescript
+go_cli_internal_agent_frameworks_common --> go_cli_internal_mcp_frameworks_typescript
+go_internal_mcp --> go_cli_internal_mcp_frameworks_java
+go_cli_internal_agent_frameworks_common --> go_cli_internal_mcp_frameworks_java
+go_internal_mcp --> go_cli_internal_mcp_frameworks_common
+go_cli_internal_config --> go_cli_internal_cli_agent
+go_cli_internal_tui --> go_cli_internal_cli_agent
+go_internal_utils --> go_cli_internal_cli_agent
+go_cli_internal_tui_dialogs --> go_cli_internal_cli_agent
+go_cli_internal_agent_frameworks --> go_cli_internal_cli_agent
+go_cli_internal_agent_frameworks_common --> go_cli_internal_cli_agent
+go_internal_version --> go_cli_internal_cli_agent
+go_internal_database --> go_cli_internal_cli_agent
+go_cli_internal_config --> go_cli_internal_cli_mcp
+go_cli_internal_mcp_builder --> go_cli_internal_cli_mcp
+go_cli_internal_agent_frameworks --> go_cli_internal_cli_mcp
+go_internal_mcp --> go_cli_internal_cli_mcp
+go_cli_internal_mcp_manifests --> go_cli_internal_cli_mcp
+go_internal_controller_translator_labels --> go_api_v1alpha2
+go_internal_utils --> go_api_v1alpha2
+go_api_v1alpha2 --> go_pkg_database
+go_internal_a2a --> go_pkg_app
+go_internal_controller_reconciler --> go_pkg_app
+go_internal_mcp --> go_pkg_app
+go_internal_httpserver --> go_pkg_app
+go_internal_version --> go_pkg_app
+go_internal_database --> go_pkg_app
+go_api_v1alpha2 --> go_pkg_translator
+go_api_v1alpha1 --> go_pkg_mcp_translator
+go_api_v1alpha1 --> go_pkg_client
+go_api_v1alpha2 --> go_pkg_client
+go_api_v1alpha1 --> go_pkg_client_api
+go_api_v1alpha2 --> go_pkg_client_api
+go_internal_database --> go_pkg_client_api
+go_cli_internal_config --> contrib_go_adk_cmd
+go_internal_a2a --> contrib_go_adk_cmd
+go_internal_httpserver_auth --> contrib_go_adk_cmd
+go_internal_mcp --> contrib_go_adk_cmd
+go_pkg_app --> contrib_go_adk_cmd
+go_pkg_app --> contrib_go_adk_examples_byo
+go_internal_a2a --> contrib_go_adk_examples_byo
+go_internal_httpserver_auth --> contrib_go_adk_pkg_app
+go_internal_a2a --> contrib_go_adk_pkg_app
+go_internal_a2a --> contrib_go_adk_pkg_config
+go_cli_internal_config --> contrib_go_adk_pkg_runner
+go_internal_controller_translator_agent --> contrib_go_adk_pkg_runner
+go_cli_internal_config --> contrib_go_adk_pkg_agent
+go_internal_controller_translator_agent --> contrib_go_adk_pkg_agent
+go_cli_internal_config --> contrib_go_adk_pkg_mcp
+go_cli_internal_common_exec --> contrib_go_adk_pkg_skills
+
+note right
+  API Endpoints:
+  REST: 10 endpoints
+end note
+
+@enduml

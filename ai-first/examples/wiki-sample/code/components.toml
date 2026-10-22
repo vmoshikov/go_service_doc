@@ -1,0 +1,17 @@
+[charts]
+repo = "https://gitlab.example.com/mk8s/charts"
+[changelog]
+task_url = "https://jira.example.com/browse/{key}"
+[components.etcd-backup]
+repo = "https://gitlab.example.com/mk8s/etcd-backup"
+chart = "charts/etcd-backup"
+overrides = "platform/values.yaml#etcdBackup"
+owner = "team-control-plane"
+[components.api-gateway]
+repo = "https://gitlab.example.com/mk8s/api-gateway"
+chart = "charts/api-gateway"
+owner = "team-api"
+[modules.core]
+repo = "https://gitlab.example.com/mk8s/core"
+module = "gitlab.example.com/mk8s/core"
+owner = "team-core"
